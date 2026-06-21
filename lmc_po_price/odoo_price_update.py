@@ -59,13 +59,7 @@ def prepare_odoo_price_update_rows(price_changes: pd.DataFrame) -> pd.DataFrame:
 
 
 def update_odoo_prices(update_rows: pd.DataFrame, config: OdooConfig) -> OdooActionSummary:
-    """Met à jour prix fournisseur, coût, prix de vente et sale_ok dans Odoo.
-
-    Les appels Odoo sont regroupés en batch :
-    - 1 appel pour récupérer tous les template_id des produits
-    - 1 appel pour récupérer toutes les lignes fournisseur (supplierinfo)
-    - 1 appel write par produit (inévitable car les valeurs diffèrent)
-    """
+    """Met à jour prix fournisseur, coût, prix de vente et sale_ok dans Odoo."""
     import odoorpc
 
     odoo = odoorpc.ODOO(config.url, port=config.port, protocol="jsonrpc+ssl")
@@ -74,50 +68,32 @@ def update_odoo_prices(update_rows: pd.DataFrame, config: OdooConfig) -> OdooAct
     Product = odoo.env["product.product"]
     SupplierInfo = odoo.env["product.supplierinfo"]
 
-    # Batch : récupérer tous les template_id en un seul appel
-    article_ids = [_safe_int(row.get("db_article_id")) for _, row in update_rows.iterrows()]
-    valid_article_ids = [aid for aid in article_ids if aid is not None]
-    template_map: dict[int, int] = {}
-    if valid_article_ids:
-        product_data = Product.search_read(
-            [("id", "in", valid_article_ids)],
-            ["id", "product_tmpl_id"],
-        )
-        template_map = {p["id"]: p["product_tmpl_id"][0] for p in product_data if p.get("product_tmpl_id")}
-
-    # Batch : récupérer toutes les lignes fournisseur en un seul appel
-    template_ids = list(template_map.values())
-    supplier_ids_list = [_safe_int(row.get("db_fournisseur_id")) for _, row in update_rows.iterrows()]
-    unique_supplier_ids = list({sid for sid in supplier_ids_list if sid is not None})
-    supplier_info_map: dict[tuple[int, int], int] = {}
-    if template_ids and unique_supplier_ids:
-        supplier_rows = SupplierInfo.search_read(
-            [("product_tmpl_id", "in", template_ids), ("name", "in", unique_supplier_ids)],
-            ["id", "product_tmpl_id", "name"],
-        )
-        for s in supplier_rows:
-            tmpl_id = s["product_tmpl_id"][0] if s.get("product_tmpl_id") else None
-            name_id = s["name"][0] if s.get("name") else None
-            if tmpl_id and name_id:
-                supplier_info_map[(tmpl_id, name_id)] = s["id"]
-
-    # Mise à jour ligne par ligne (les valeurs diffèrent pour chaque produit)
     results: list[dict[str, Any]] = []
-    for (_, row), article_id, supplier_id in zip(update_rows.iterrows(), article_ids, supplier_ids_list):
+    for _, row in update_rows.iterrows():
+        article_id = _safe_int(row.get("db_article_id"))
+        supplier_id = _safe_int(row.get("db_fournisseur_id"))
         if article_id is None or supplier_id is None:
             results.append(_result(row, "error", "ID article ou fournisseur manquant"))
             continue
+
         try:
             new_cost = float(row["Fact_PU_unitaire"])
             new_supplier_price = float(row["Fact_PU_Net_GZ"])
             new_sale_price = float(row["New_Prix_de_vente"])
             new_sale_ok = bool(row.get("Odoo_sale_ok", True))
 
-            template_id = template_map.get(article_id)
+            article = Product.browse(article_id)
+            template_id = article.product_tmpl_id.id
+
+            supplier_info = SupplierInfo.search_read(
+                [("product_tmpl_id", "=", template_id), ("name", "=", supplier_id)],
+                ["id"],
+            )
+
             status = "success"
             supplier_message = "prix fournisseur mis a jour"
-            if template_id and (template_id, supplier_id) in supplier_info_map:
-                SupplierInfo.write([supplier_info_map[(template_id, supplier_id)]], {"price": new_supplier_price})
+            if supplier_info:
+                SupplierInfo.write([supplier_info[0]["id"]], {"price": new_supplier_price})
             else:
                 status = "warning"
                 supplier_message = "ligne fournisseur introuvable; produit mis a jour seulement"

@@ -24,9 +24,9 @@ class PurchaseOrderSummary:
 def create_purchase_order_from_review(review_rows: pd.DataFrame, config: OdooConfig) -> PurchaseOrderSummary:
     """Crée un bon de commande Odoo à partir des lignes revues.
 
-    Les appels Odoo sont regroupés en batch pour minimiser la latence réseau :
-    - 1 appel pour résoudre tous les external_ids articles
-    - 1 appel pour récupérer toutes les unités de mesure
+    L'appelant doit demander une confirmation utilisateur avant d'exécuter cette
+    fonction. La référence commande est fournie par la facture; Odoo conserve sa
+    séquence interne seulement si le champ name n'est pas écrit.
     """
     if review_rows.empty:
         return PurchaseOrderSummary(0, "error", None, None, "Aucune ligne a importer", pd.DataFrame())
@@ -37,8 +37,8 @@ def create_purchase_order_from_review(review_rows: pd.DataFrame, config: OdooCon
     odoo.login(config.database, config.username, config.password)
 
     PurchaseOrder = odoo.env["purchase.order"]
+    Product = odoo.env["product.product"]
 
-    # Résolution du partenaire (1 appel)
     first = review_rows.iloc[0]
     supplier_ref = first.get("Fournisseur/ID")
     partner_id = _resolve_partner_id(odoo, supplier_ref)
@@ -52,69 +52,25 @@ def create_purchase_order_from_review(review_rows: pd.DataFrame, config: OdooCon
             pd.DataFrame(),
         )
 
-    # Résolution batch de tous les articles (1 appel ir.model.data)
-    article_external_ids = [
-        str(row.get("Lignes de la commande/Article/ID", ""))
-        for _, row in review_rows.iterrows()
-    ]
-    external_ids_to_resolve = [
-        eid for eid in article_external_ids
-        if eid and (eid.startswith("__") or "." in eid)
-    ]
-    external_id_map: dict[str, int] = {}
-    if external_ids_to_resolve:
-        ext_rows = odoo.env["ir.model.data"].search_read(
-            [("model", "=", "product.product"), ("complete_name", "in", external_ids_to_resolve)],
-            ["complete_name", "res_id"],
-        )
-        external_id_map = {r["complete_name"]: r["res_id"] for r in ext_rows}
-
-    # Résolution des product_ids
-    product_ids = []
-    for eid in article_external_ids:
-        if not eid:
-            product_ids.append(None)
-        elif eid in external_id_map:
-            product_ids.append(external_id_map[eid])
-        else:
-            try:
-                product_ids.append(int(float(eid)))
-            except (ValueError, TypeError):
-                product_ids.append(None)
-
-    # Récupération batch des unités de mesure (1 appel product.product)
-    valid_ids = [pid for pid in product_ids if pid is not None]
-    uom_map: dict[int, int] = {}
-    name_map: dict[int, str] = {}
-    if valid_ids:
-        product_rows = odoo.env["product.product"].search_read(
-            [("id", "in", valid_ids)],
-            ["id", "name", "uom_po_id", "uom_id"],
-        )
-        for p in product_rows:
-            uom_po = p.get("uom_po_id")
-            uom = p.get("uom_id")
-            uom_map[p["id"]] = (uom_po[0] if uom_po else None) or (uom[0] if uom else None)
-            name_map[p["id"]] = p.get("name", "")
-
-    # Construction des lignes de commande
     order_lines = []
     line_results: list[dict[str, Any]] = []
-    for (_, row), product_id in zip(review_rows.iterrows(), product_ids):
+    for _, row in review_rows.iterrows():
+        product_id = _resolve_product_id(odoo, row.get("Lignes de la commande/Article/ID"))
         if product_id is None:
             line_results.append(_line_result(row, "error", "article introuvable"))
             continue
         try:
+            product = Product.browse(product_id)
             order_lines.append(
                 (
                     0,
                     0,
                     {
                         "product_id": product_id,
-                        "name": row.get("Lignes de la commande/Description") or name_map.get(product_id, ""),
-                        "product_qty": float(row.get("Lignes de la commande/Quantité") or 0),
-                        "price_unit": float(row.get("Lignes de la commande/Prix unitaire") or 0),
-                        "product_uom": uom_map.get(product_id),
+                        "name": row.get("Lignes de la commande/Description") or product.name,
+                        "product_qty": float(row.get("Lignes de la commande/Quantité")),
+                        "price_unit": float(row.get("Lignes de la commande/Prix unitaire")),
+                        "product_uom": product.uom_po_id.id or product.uom_id.id,
                         "date_planned": _parse_odoo_datetime(row.get("Lignes de la commande/Date prévue")),
                     },
                 )

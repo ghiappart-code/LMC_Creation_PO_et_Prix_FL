@@ -75,9 +75,12 @@ def _line_description(row: pd.Series) -> str:
 
 
 def _supplier_external_id(row: pd.Series) -> str:
-    external_id = row.get("db_fournisseur_id_externe")
-    if external_id:
-        return str(external_id)
+    """Retourne l'ID numérique Odoo du fournisseur.
+
+    On utilise directement db_fournisseur_id (ID numérique) plutôt que
+    db_fournisseur_id_externe qui peut pointer vers un contact (personne)
+    plutôt que vers la société fournisseur elle-même.
+    """
     supplier_id = row.get("db_fournisseur_id")
     if pd.isna(supplier_id):
         return ""

@@ -66,6 +66,7 @@ class LeRelaisLocalParser(SupplierInvoiceParser):
 
 
 def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
+    # Cas 1 : ligne livrée complète — NB colis + QTE + brut + net + montant + tva
     structured = re.match(
         r"^(?P<designation>.+?)\s+"
         r"(?P<colis>[#A-Z0-9.,]+)\s+"
@@ -95,34 +96,35 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
             "designation_key": normalize_key(structured.group("designation")),
         }
 
-    numbers = re.findall(r"-?\d+,\d+|-?\d+\.\d+|-?\d+", body)
-    if len(numbers) < 4:
-        return None
-    amount = parse_decimal(numbers[-2])
-    net_price = parse_decimal(numbers[-3])
-    gross_price = parse_decimal(numbers[-4])
-    if amount is None or net_price is None:
-        return None
-    quantity = round(amount / net_price, 6) if net_price else None
-    price_pos = body.rfind(numbers[-4])
-    before_prices = body[:price_pos].strip()
-    unit_match = re.search(r"\b(U|KG)\b\s*$", before_prices, flags=re.IGNORECASE)
-    unit = unit_match.group(1).upper() if unit_match else ""
-    before_unit = before_prices[: unit_match.start()].strip() if unit_match else before_prices
-    designation = _cleanup_designation(before_unit)
+    # Cas 2 : ligne non livrée — NB colis et QTE vides, seulement brut + net + tva
+    # Exemple: "120235 AUBERGINE BIO FERME SAINT SA KG 3,90 3,90 3"
+    not_delivered = re.match(
+        r"^(?P<designation>.+?)\s+"
+        r"(?P<unite>U|KG|irgule)?\s*"
+        r"(?P<brut>\d+[,.]\d+)\s+"
+        r"(?P<net>\d+[,.]\d+)\s+"
+        r"(?P<tva>\d+)$",
+        body,
+        flags=re.IGNORECASE,
+    )
+    if not_delivered:
+        unit = (not_delivered.group("unite") or "").upper()
+        if unit == "IRGULE":
+            unit = "KG"
+        return {
+            "reference_fournisseur": reference,
+            "designation": _cleanup_designation(not_delivered.group("designation")),
+            "quantite": 0,
+            "unite": unit,
+            "prix_unitaire": parse_decimal(not_delivered.group("net")),
+            "prix_unitaire_brut": parse_decimal(not_delivered.group("brut")),
+            "montant_ht": 0,
+            "code_tva": not_delivered.group("tva"),
+            "reference_key": normalize_key(reference),
+            "designation_key": normalize_key(not_delivered.group("designation")),
+        }
 
-    return {
-        "reference_fournisseur": reference,
-        "designation": designation,
-        "quantite": quantity,
-        "unite": unit,
-        "prix_unitaire": net_price,
-        "prix_unitaire_brut": gross_price,
-        "montant_ht": amount,
-        "code_tva": numbers[-1],
-        "reference_key": normalize_key(reference),
-        "designation_key": normalize_key(designation),
-    }
+    return None
 
 
 def _cleanup_designation(value: str) -> str:

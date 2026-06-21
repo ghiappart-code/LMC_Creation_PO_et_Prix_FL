@@ -262,6 +262,24 @@ if include_purchase_order:
             file_name=f"{invoice.invoice_number or 'facture'}_bon_commande_odoo.csv",
             mime="text/csv",
         )
+        # Vérification des totaux
+        total_po = (
+            result.purchase_order_review["Lignes de la commande/Quantité"].fillna(0)
+            * result.purchase_order_review["Lignes de la commande/Prix unitaire"].fillna(0)
+        ).sum()
+        total_facture_ht = result.invoice.lines["montant_ht"].fillna(0).sum()
+        transport_ht = result.invoice.charges["montant_ht"].fillna(0).sum() if not result.invoice.charges.empty else 0.0
+        total_facture_sans_transport = total_facture_ht - transport_ht
+        ecart = total_po - total_facture_sans_transport
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total HT bon de commande", f"{total_po:.2f} €")
+        col2.metric("Total HT facture sans transport", f"{total_facture_sans_transport:.2f} €")
+        col3.metric("Écart", f"{ecart:.2f} €", delta_color="inverse" if abs(ecart) > 0.01 else "off")
+        if abs(ecart) > 0.01:
+            st.warning(f"⚠️ Écart de {ecart:.2f} € entre le bon de commande et la facture.")
+        else:
+            st.success("✅ Total bon de commande conforme à la facture.")
+
         if st.session_state.get("po_created"):
             st.success(st.session_state["po_created"])
         else:

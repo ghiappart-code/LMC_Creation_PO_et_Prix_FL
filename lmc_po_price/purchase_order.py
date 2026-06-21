@@ -50,7 +50,7 @@ def prepare_purchase_order_review(
                 "Lignes de la commande/Article/ID": row.get("db_id_externe") or "",
                 "Lignes de la commande/Unité de mesure d'article": row.get("Fact_unite") or row.get("db_unite") or "",
                 "Lignes de la commande/Quantité": row.get("Fact_quantite"),
-                "Lignes de la commande/Prix unitaire": row.get("Fact_PU_unitaire"),
+                "Lignes de la commande/Prix unitaire": row.get("Fact_PU_Net"),
                 "Lignes de la commande/Taxes/ID": DEFAULT_PURCHASE_TAX_ID,
                 "Lignes de la commande/Date prévue": planned_date_text,
             }

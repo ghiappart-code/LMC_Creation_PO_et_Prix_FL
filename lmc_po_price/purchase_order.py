@@ -61,9 +61,11 @@ def prepare_purchase_order_review(
 def prepare_purchase_order_import_csv(review_rows: pd.DataFrame) -> bytes:
     """Convertit le brouillon PO en CSV compatible import Odoo.
 
-    L'encodage `latin1` et le séparateur `;` suivent le fichier d'exemple fourni.
+    Le séparateur `;` suit le fichier d'exemple fourni. On utilise utf-8-sig
+    (UTF-8 avec BOM) pour supporter les caractères spéciaux (ex: Œ, é, à)
+    tout en restant compatible avec Excel et l'import Odoo.
     """
-    return review_rows.to_csv(index=False, sep=";", encoding="latin1").encode("latin1")
+    return review_rows.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
 
 
 def _line_description(row: pd.Series) -> str:

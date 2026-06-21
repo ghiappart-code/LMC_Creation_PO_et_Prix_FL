@@ -60,6 +60,9 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} Mo"
 
 
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 data_path = default_database_path()
 status = database_status(data_path)
 local_database_exists = status["exists"]
@@ -99,11 +102,12 @@ with st.sidebar:
             try:
                 with st.spinner("Extraction des articles depuis Odoo..."):
                     df = refresh_articles_database(_odoo_config_from_streamlit(), data_path)
-                st.session_state["database_loaded_from_odoo"] = True
-                st.success(f"Base mise a jour : {len(df)} lignes.")
+                st.session_state["database_loaded_from_odoo"] = f"Base mise a jour : {len(df)} lignes."
                 st.rerun()
             except Exception as exc:
                 st.error(f"Impossible de charger la base depuis Odoo : {exc}")
+        if st.session_state.get("database_loaded_from_odoo"):
+            st.success(st.session_state["database_loaded_from_odoo"])
         database_ready = data_path.exists()
 
     invoice_file = st.file_uploader("Facture fournisseur", type=["pdf"])
@@ -113,48 +117,68 @@ with st.sidebar:
     )
     launch = st.button("Lancer l'analyse", type="primary", disabled=not invoice_file or not database_ready)
 
-if not launch:
+# ---------------------------------------------------------------------------
+# Lancement de l'analyse — résultat stocké dans session_state
+# ---------------------------------------------------------------------------
+if launch:
+    try:
+        invoice = parse_invoice_pdf(invoice_file)
+        articles = _load_database(database_mode, database_file)
+        config = WorkflowConfig(supplier_code=invoice.supplier_code)
+        all_lines = match_invoice_to_articles(invoice.lines, articles, config)
+        matched = all_lines[all_lines["statut"] == "trouve"].copy()
+        unmatched = all_lines[all_lines["statut"] == "non_trouve"].copy()
+        ambiguous = all_lines[all_lines["statut"] == "a_verifier"].copy()
+        price_changes = matched[matched["prix_change"]].copy()
+        price_update_rows = prepare_odoo_price_update_rows(price_changes)
+        result = WorkflowResult(
+            invoice=invoice,
+            all_lines=all_lines,
+            matched=matched,
+            unmatched=unmatched,
+            ambiguous=ambiguous,
+            price_changes=price_changes,
+            purchase_order_review=_purchase_order_review(
+                all_lines,
+                invoice.invoice_number,
+                invoice.delivery_date,
+            ),
+            sale_flag_review=pd.DataFrame(),
+        )
+        st.session_state["result"] = result
+        st.session_state["price_update_rows"] = price_update_rows
+        st.session_state["selected_task"] = selected_task
+        # Réinitialiser les confirmations Odoo à chaque nouvelle analyse
+        st.session_state.pop("po_created", None)
+        st.session_state.pop("prices_updated", None)
+    except Exception as exc:
+        st.error(f"Analyse impossible : {exc}")
+        st.stop()
+
+# ---------------------------------------------------------------------------
+# Affichage — on travaille depuis session_state
+# ---------------------------------------------------------------------------
+if "result" not in st.session_state:
     st.info("Chargez une facture et une base articles, puis lancez l'analyse.")
     st.stop()
 
-try:
-    invoice = parse_invoice_pdf(invoice_file)
-    articles = _load_database(database_mode, database_file)
-    config = WorkflowConfig(supplier_code=invoice.supplier_code)
-    all_lines = match_invoice_to_articles(invoice.lines, articles, config)
-    matched = all_lines[all_lines["statut"] == "trouve"].copy()
-    unmatched = all_lines[all_lines["statut"] == "non_trouve"].copy()
-    ambiguous = all_lines[all_lines["statut"] == "a_verifier"].copy()
-    price_changes = matched[matched["prix_change"]].copy()
-    price_update_rows = prepare_odoo_price_update_rows(price_changes)
-    result = WorkflowResult(
-        invoice=invoice,
-        all_lines=all_lines,
-        matched=matched,
-        unmatched=unmatched,
-        ambiguous=ambiguous,
-        price_changes=price_changes,
-        purchase_order_review=_purchase_order_review(
-            all_lines,
-            invoice.invoice_number,
-            invoice.delivery_date,
-        ),
-        sale_flag_review=pd.DataFrame(),
-    )
-except Exception as exc:
-    st.error(f"Analyse impossible : {exc}")
-    st.stop()
+result: WorkflowResult = st.session_state["result"]
+price_update_rows: pd.DataFrame = st.session_state["price_update_rows"]
+invoice = result.invoice
+current_task = st.session_state.get("selected_task", selected_task)
 
+include_purchase_order = current_task in {TASK_BOTH, TASK_PURCHASE_ORDER}
+include_price_review = current_task in {TASK_BOTH, TASK_PRICE_REVIEW}
+
+# Métriques
 cols = st.columns(5)
 cols[0].metric("Lignes facture", len(invoice.lines))
-cols[1].metric("Articles trouves", len(matched))
-cols[2].metric("Non retrouves", len(unmatched))
-cols[3].metric("A verifier", len(ambiguous))
-cols[4].metric("Prix changes", len(price_changes))
+cols[1].metric("Articles trouves", len(result.matched))
+cols[2].metric("Non retrouves", len(result.unmatched))
+cols[3].metric("A verifier", len(result.ambiguous))
+cols[4].metric("Prix changes", len(result.price_changes))
 
-include_purchase_order = selected_task in {TASK_BOTH, TASK_PURCHASE_ORDER}
-include_price_review = selected_task in {TASK_BOTH, TASK_PRICE_REVIEW}
-
+# Téléchargement classeur de contrôle
 st.download_button(
     "Telecharger le classeur de controle",
     data=result_workbook_bytes(
@@ -166,6 +190,32 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
+# ---------------------------------------------------------------------------
+# Résumé des métadonnées
+# ---------------------------------------------------------------------------
+_invoice_file_name = getattr(invoice_file, "name", None) or f"{invoice.invoice_number or 'facture'}.pdf"
+invoice_stem = Path(_invoice_file_name).stem
+
+metadata_rows = {
+    "Numéro de facture": invoice.invoice_number,
+    "Date de facture": str(invoice.invoice_date) if invoice.invoice_date else "n/a",
+    "Date de livraison": str(invoice.delivery_date) if invoice.delivery_date else "n/a",
+    "Fournisseur": invoice.supplier_name,
+    "Code fournisseur": invoice.supplier_code,
+}
+metadata_rows.update({k: str(v) for k, v in (invoice.metadata or {}).items()})
+metadata_df = pd.DataFrame(
+    [{"Champ": k, "Valeur": v} for k, v in metadata_rows.items()]
+)
+
+# ---------------------------------------------------------------------------
+# Onglets de consultation (lecture seule)
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader(f"Résultats pour la facture {invoice_stem}")
+st.caption("Résumé des métadonnées")
+st.dataframe(metadata_df, use_container_width=True, hide_index=True)
+
 tab_names = ["Tous les articles facture"]
 if include_purchase_order:
     tab_names.append("Bon de commande")
@@ -175,33 +225,51 @@ tab_names.extend(["Non retrouves", "A verifier"])
 
 tabs = st.tabs(tab_names)
 tab_index = 0
+
 with tabs[tab_index]:
-    st.dataframe(all_lines, use_container_width=True, hide_index=True)
+    st.dataframe(result.all_lines, use_container_width=True, hide_index=True)
 tab_index += 1
+
 if include_purchase_order:
     with tabs[tab_index]:
         st.dataframe(result.purchase_order_review, use_container_width=True, hide_index=True)
+    tab_index += 1
+
+if include_price_review:
+    with tabs[tab_index]:
+        st.dataframe(result.price_changes, use_container_width=True, hide_index=True)
+    tab_index += 1
+
+with tabs[tab_index]:
+    st.dataframe(unmatched_review(result.unmatched), use_container_width=True, hide_index=True)
+tab_index += 1
+
+with tabs[tab_index]:
+    st.dataframe(result.ambiguous, use_container_width=True, hide_index=True)
+
+# ---------------------------------------------------------------------------
+# Section Odoo — CRÉATION BON DE COMMANDE (hors onglets)
+# ---------------------------------------------------------------------------
+if include_purchase_order:
+    st.divider()
+    st.subheader("Création du Bon de Commande dans Odoo")
+    if result.purchase_order_review.empty:
+        st.info("Aucune ligne éligible pour créer un bon de commande.")
+    else:
         st.download_button(
             "Télécharger le CSV d'import bon de commande",
             data=prepare_purchase_order_import_csv(result.purchase_order_review),
             file_name=f"{invoice.invoice_number or 'facture'}_bon_commande_odoo.csv",
             mime="text/csv",
-            disabled=result.purchase_order_review.empty,
         )
-        st.divider()
-        st.subheader("Création Odoo")
-        if result.purchase_order_review.empty:
-            st.info("Aucune ligne éligible pour créer un bon de commande.")
+        if st.session_state.get("po_created"):
+            st.success(st.session_state["po_created"])
         else:
             confirm_po = st.checkbox(
                 "J'ai vérifié le bon de commande et je veux le créer dans Odoo",
-                key=f"confirm_po_{invoice.invoice_number}",
+                key="confirm_po",
             )
-            if st.button(
-                "Créer le bon de commande dans Odoo",
-                disabled=not confirm_po,
-                key=f"create_po_{invoice.invoice_number}",
-            ):
+            if st.button("Créer le bon de commande dans Odoo", disabled=not confirm_po, key="create_po"):
                 try:
                     with st.spinner("Création du bon de commande dans Odoo..."):
                         summary = create_purchase_order_from_review(
@@ -209,6 +277,7 @@ if include_purchase_order:
                             _odoo_config_from_streamlit(),
                         )
                     if summary.status == "success":
+                        st.session_state["po_created"] = summary.message
                         st.success(summary.message)
                     else:
                         st.error(summary.message)
@@ -216,50 +285,46 @@ if include_purchase_order:
                         st.dataframe(summary.results, use_container_width=True, hide_index=True)
                 except Exception as exc:
                     st.error(f"Impossible de créer le bon de commande : {exc}")
-    tab_index += 1
+
+# ---------------------------------------------------------------------------
+# Section Odoo — RAPPROCHEMENT MISE À JOUR DES PRIX (hors onglets)
+# ---------------------------------------------------------------------------
 if include_price_review:
-    with tabs[tab_index]:
-        st.dataframe(price_changes, use_container_width=True, hide_index=True)
-        st.divider()
-        st.subheader("Mise à jour Odoo")
-        if price_update_rows.empty:
-            st.info("Aucune ligne de changement de prix n'est éligible à une mise à jour automatique.")
+    st.divider()
+    st.subheader("Rapprochement Mise à Jour des Prix dans Odoo")
+    if price_update_rows.empty:
+        st.info("Aucune ligne de changement de prix n'est éligible à une mise à jour automatique.")
+    else:
+        st.warning(f"{len(price_update_rows)} ligne(s) éligible(s) à la mise à jour Odoo.")
+        if st.session_state.get("prices_updated"):
+            st.success(st.session_state["prices_updated"])
         else:
-            st.warning(f"{len(price_update_rows)} ligne(s) éligible(s) à la mise à jour Odoo.")
-            st.dataframe(price_update_rows, use_container_width=True, hide_index=True)
             confirm_prices = st.checkbox(
                 "J'ai vérifié les changements de prix et je veux mettre à jour Odoo",
-                key=f"confirm_prices_{invoice.invoice_number}",
+                key="confirm_prices",
             )
-            if st.button(
-                "Mettre à jour les prix dans Odoo",
-                disabled=not confirm_prices,
-                key=f"update_prices_{invoice.invoice_number}",
-            ):
+            if st.button("Mettre à jour les prix dans Odoo", disabled=not confirm_prices, key="update_prices"):
                 try:
                     with st.spinner("Mise à jour des prix dans Odoo..."):
                         summary = update_odoo_prices(price_update_rows, _odoo_config_from_streamlit())
                     if summary.errors:
-                        st.error(
+                        msg = (
                             f"Mise à jour terminée avec erreurs : {summary.success} succès, "
                             f"{summary.warnings} avertissement(s), {summary.errors} erreur(s)."
                         )
+                        st.error(msg)
                     else:
-                        st.success(
+                        msg = (
                             f"Mise à jour terminée : {summary.success} succès, "
-                            f"{summary.warnings} avertissement(s), {summary.errors} erreur."
+                            f"{summary.warnings} avertissement(s), 0 erreur."
                         )
+                        st.session_state["prices_updated"] = msg
+                        st.success(msg)
                     st.dataframe(summary.results, use_container_width=True, hide_index=True)
                 except Exception as exc:
                     st.error(f"Impossible de mettre à jour les prix : {exc}")
-    tab_index += 1
-with tabs[tab_index]:
-    st.dataframe(unmatched_review(unmatched), use_container_width=True, hide_index=True)
-tab_index += 1
-with tabs[tab_index]:
-    st.dataframe(ambiguous, use_container_width=True, hide_index=True)
 
 st.caption(
     "Les écritures Odoo ne sont jamais automatiques : elles ne sont lancées "
-    "qu'après vérification des onglets concernés et validation explicite par case à cocher."
+    "qu'après vérification et validation explicite par case à cocher."
 )

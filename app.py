@@ -203,7 +203,7 @@ metadata_rows = {
     "Fournisseur": invoice.supplier_name,
     "Code fournisseur": invoice.supplier_code,
 }
-metadata_rows.update({k: str(v) for k, v in (invoice.metadata or {}).items()})
+metadata_rows.update({k: str(v) for k, v in (invoice.metadata or {}).items() if k != "fournisseur"})
 metadata_df = pd.DataFrame(
     [{"Champ": k, "Valeur": v} for k, v in metadata_rows.items()]
 )

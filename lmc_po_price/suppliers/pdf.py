@@ -23,7 +23,7 @@ def extract_pdf_text_and_rows(file_or_path) -> tuple[str, list[str]]:
                 {"x0": item[0], "top": item[1], "x1": item[2], "text": item[4]}
                 for item in page.get_text("words")
             ]
-            rows.extend(_visual_rows(words, top_min=285, top_max=560))
+            rows.extend(_visual_rows(words, top_min=248, top_max=660))
         return text, rows
     except Exception:
         pass

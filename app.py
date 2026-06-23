@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+from time import perf_counter
 
 import pandas as pd
 import streamlit as st
@@ -58,6 +59,12 @@ def _format_size(size_bytes: int) -> str:
     if size_bytes < 1024 * 1024:
         return f"{size_bytes / 1024:.1f} Ko"
     return f"{size_bytes / (1024 * 1024):.1f} Mo"
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds < 10:
+        return f"{seconds:.1f} secondes"
+    return f"{seconds:.0f} secondes"
 
 
 def _show_po_creation_diagnostics(results: pd.DataFrame | None) -> None:
@@ -336,14 +343,17 @@ if include_purchase_order:
             if st.button("Créer le bon de commande dans Odoo", disabled=not confirm_po, key="create_po"):
                 try:
                     with st.spinner("Création du bon de commande dans Odoo..."):
+                        started_at = perf_counter()
                         summary = create_purchase_order_from_review(
                             po_review_valid,
                             _odoo_config_from_streamlit(),
                         )
+                        elapsed_seconds = perf_counter() - started_at
                     if summary.status == "success":
-                        st.session_state["po_created"] = summary.message
+                        success_message = f"{summary.message} en {_format_duration(elapsed_seconds)}"
+                        st.session_state["po_created"] = success_message
                         st.session_state["po_creation_results"] = summary.results
-                        st.success(summary.message)
+                        st.success(success_message)
                     else:
                         st.error(summary.message)
                     _show_po_creation_diagnostics(summary.results)

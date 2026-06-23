@@ -55,19 +55,21 @@ def create_purchase_order_from_review(review_rows: pd.DataFrame, config: OdooCon
     order_lines = []
     line_results: list[dict[str, Any]] = []
     for _, row in review_rows.iterrows():
-        product_id = _resolve_product_id(odoo, row.get("Lignes de la commande/Article/ID"))
+        article_ref = row.get("Lignes de la commande/Article/ID")
+        product_id = _resolve_product_id(odoo, article_ref)
         if product_id is None:
             line_results.append(_line_result(row, "error", "article introuvable"))
             continue
         try:
             product = Product.browse(product_id)
+            product_name = product.name
             order_lines.append(
                 (
                     0,
                     0,
                     {
                         "product_id": product_id,
-                        "name": row.get("Lignes de la commande/Description") or product.name,
+                        "name": row.get("Lignes de la commande/Description") or product_name,
                         "product_qty": float(row.get("Lignes de la commande/Quantité")),
                         "price_unit": float(row.get("Lignes de la commande/Prix unitaire")),
                         "product_uom": product.uom_po_id.id or product.uom_id.id,
@@ -75,7 +77,15 @@ def create_purchase_order_from_review(review_rows: pd.DataFrame, config: OdooCon
                     },
                 )
             )
-            line_results.append(_line_result(row, "ready", "ligne preparee"))
+            line_results.append(
+                _line_result(
+                    row,
+                    "ready",
+                    "ligne preparee",
+                    product_id_resolu=product_id,
+                    nom_article_resolu=product_name,
+                )
+            )
         except Exception as exc:
             line_results.append(_line_result(row, "error", str(exc)))
 
@@ -92,13 +102,15 @@ def create_purchase_order_from_review(review_rows: pd.DataFrame, config: OdooCon
             values["name"] = str(reference)
         purchase_order_id = PurchaseOrder.create(values)
         order = PurchaseOrder.browse(purchase_order_id)
+        created_lines = _read_created_order_lines(odoo, purchase_order_id)
+        enriched_results = _merge_created_line_diagnostics(line_results, created_lines)
         return PurchaseOrderSummary(
             len(review_rows),
             "success",
             purchase_order_id,
             order.name,
             f"Bon de commande cree: {order.name}",
-            pd.DataFrame(line_results),
+            pd.DataFrame(enriched_results),
         )
     except Exception as exc:
         return PurchaseOrderSummary(len(review_rows), "error", None, None, str(exc), pd.DataFrame(line_results))
@@ -125,8 +137,11 @@ def _resolve_product_id(odoo, value: object) -> int | None:
         return None
     text = str(value)
     if text.startswith("__") or "." in text:
+        module, name = _split_external_id(text)
+        if module is None or name is None:
+            return None
         rows = odoo.env["ir.model.data"].search_read(
-            [("model", "=", "product.product"), ("complete_name", "=", text)],
+            [("model", "=", "product.product"), ("module", "=", module), ("name", "=", name)],
             ["res_id"],
         )
         return rows[0]["res_id"] if rows else None
@@ -134,6 +149,15 @@ def _resolve_product_id(odoo, value: object) -> int | None:
         return int(float(text))
     except ValueError:
         return None
+
+
+def _split_external_id(value: str) -> tuple[str | None, str | None]:
+    if "." not in value:
+        return None, None
+    module, name = value.split(".", 1)
+    if not module or not name:
+        return None, None
+    return module, name
 
 
 def _parse_odoo_datetime(value: object) -> str:
@@ -148,9 +172,60 @@ def _parse_odoo_datetime(value: object) -> str:
     return text
 
 
-def _line_result(row: pd.Series, status: str, message: str) -> dict[str, Any]:
+def _read_created_order_lines(odoo, purchase_order_id: int) -> list[dict[str, Any]]:
+    line_ids = odoo.env["purchase.order.line"].search([("order_id", "=", purchase_order_id)])
+    if not line_ids:
+        return []
+    return odoo.env["purchase.order.line"].read(
+        line_ids,
+        ["product_id", "name", "product_qty", "price_unit"],
+    )
+
+
+def _merge_created_line_diagnostics(
+    line_results: list[dict[str, Any]],
+    created_lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    ready_index = 0
+    output: list[dict[str, Any]] = []
+    for result in line_results:
+        enriched = dict(result)
+        if result.get("status") == "ready" and ready_index < len(created_lines):
+            created_line = created_lines[ready_index]
+            product_id = created_line.get("product_id")
+            enriched.update(
+                {
+                    "product_id_lu_dans_po_odoo": _relation_id(product_id),
+                    "nom_article_lu_dans_po_odoo": _relation_name(product_id),
+                    "description_lue_dans_po_odoo": created_line.get("name"),
+                    "quantite_lue_dans_po_odoo": created_line.get("product_qty"),
+                    "prix_lu_dans_po_odoo": created_line.get("price_unit"),
+                }
+            )
+            ready_index += 1
+        output.append(enriched)
+    return output
+
+
+def _relation_id(value: object) -> int | None:
+    return value[0] if isinstance(value, (list, tuple)) and value else None
+
+
+def _relation_name(value: object) -> str | None:
+    return value[1] if isinstance(value, (list, tuple)) and len(value) > 1 else None
+
+
+def _line_result(
+    row: pd.Series,
+    status: str,
+    message: str,
+    product_id_resolu: int | None = None,
+    nom_article_resolu: str | None = None,
+) -> dict[str, Any]:
     return {
-        "article": row.get("Lignes de la commande/Article/ID"),
+        "article_external_id_demande": row.get("Lignes de la commande/Article/ID"),
+        "product_id_resolu_avant_creation": product_id_resolu,
+        "nom_article_resolu_avant_creation": nom_article_resolu,
         "description": row.get("Lignes de la commande/Description"),
         "status": status,
         "message": message,

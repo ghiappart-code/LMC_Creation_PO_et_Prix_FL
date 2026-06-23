@@ -60,6 +60,13 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} Mo"
 
 
+def _show_po_creation_diagnostics(results: pd.DataFrame | None) -> None:
+    if results is None or results.empty:
+        return
+    if st.checkbox("Afficher le diagnostic technique de création Odoo", key="show_po_debug"):
+        st.dataframe(results, use_container_width=True, hide_index=True)
+
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -98,6 +105,8 @@ with st.sidebar:
             st.caption(f"Derniere base extraite : `{data_path.name}`")
         else:
             st.caption("Aucune base extraite depuis Odoo pour le moment.")
+        odoo_database = st.secrets.get("odoo", {}).get("database", "inconnue")
+        st.caption(f"Base Odoo : `{odoo_database}`")
         if st.button("Charger la base depuis Odoo"):
             try:
                 with st.spinner("Extraction des articles depuis Odoo..."):
@@ -150,6 +159,7 @@ if launch:
         st.session_state["selected_task"] = selected_task
         # Réinitialiser les confirmations Odoo à chaque nouvelle analyse
         st.session_state.pop("po_created", None)
+        st.session_state.pop("po_creation_results", None)
         st.session_state.pop("prices_updated", None)
     except Exception as exc:
         st.error(f"Analyse impossible : {exc}")
@@ -281,9 +291,44 @@ if include_purchase_order:
         else:
             st.success("✅ Total bon de commande conforme à la facture.")
 
-        if st.session_state.get("po_created"):
+        # Vérification préalable des lignes avant création Odoo
+        issues = []
+        valid_rows = []
+        for _, row in result.purchase_order_review.iterrows():
+            article_id = row.get("Lignes de la commande/Article/ID", "")
+            quantite = row.get("Lignes de la commande/Quantité")
+            prix = row.get("Lignes de la commande/Prix unitaire")
+            description = row.get("Lignes de la commande/Description", "")
+            raisons = []
+            if not article_id:
+                raisons.append("ID article manquant")
+            try:
+                if prix is None or float(prix) <= 0:
+                    raisons.append("prix unitaire nul ou manquant")
+            except (TypeError, ValueError):
+                raisons.append("prix unitaire invalide")
+            if raisons:
+                issues.append({
+                    "Article/ID": article_id,
+                    "Description": description,
+                    "Raison": ", ".join(raisons),
+                })
+            else:
+                valid_rows.append(row)
+
+        if issues:
+            st.warning(f"{len(issues)} ligne(s) exclue(s) du bon de commande — à corriger si nécessaire :")
+            st.dataframe(pd.DataFrame(issues), use_container_width=True, hide_index=True)
+
+        po_review_valid = pd.DataFrame(valid_rows, columns=result.purchase_order_review.columns) if valid_rows else pd.DataFrame(columns=result.purchase_order_review.columns)
+
+        if po_review_valid.empty:
+            st.error("Aucune ligne valide pour créer le bon de commande.")
+        elif st.session_state.get("po_created"):
             st.success(st.session_state["po_created"])
+            _show_po_creation_diagnostics(st.session_state.get("po_creation_results"))
         else:
+            st.info(f"{len(valid_rows)} ligne(s) valide(s) seront incluses dans le bon de commande.")
             confirm_po = st.checkbox(
                 "J'ai vérifié le bon de commande et je veux le créer dans Odoo",
                 key="confirm_po",
@@ -292,16 +337,16 @@ if include_purchase_order:
                 try:
                     with st.spinner("Création du bon de commande dans Odoo..."):
                         summary = create_purchase_order_from_review(
-                            result.purchase_order_review,
+                            po_review_valid,
                             _odoo_config_from_streamlit(),
                         )
                     if summary.status == "success":
                         st.session_state["po_created"] = summary.message
+                        st.session_state["po_creation_results"] = summary.results
                         st.success(summary.message)
                     else:
                         st.error(summary.message)
-                    if not summary.results.empty:
-                        st.dataframe(summary.results, use_container_width=True, hide_index=True)
+                    _show_po_creation_diagnostics(summary.results)
                 except Exception as exc:
                     st.error(f"Impossible de créer le bon de commande : {exc}")
 

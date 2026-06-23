@@ -39,18 +39,28 @@ def prepare_purchase_order_review(
         return pd.DataFrame(columns=ODOO_PO_COLUMNS)
 
     planned_date_text = _format_planned_date(planned_date)
+
+    # Trouver le fournisseur sur la première ligne qui a un fournisseur_id valide
+    resolved_supplier_id = supplier_external_id or ""
+    if not resolved_supplier_id:
+        for _, row in eligible.iterrows():
+            candidate = _supplier_external_id(row)
+            if candidate:
+                resolved_supplier_id = candidate
+                break
+
     rows: list[dict[str, object]] = []
     for index, (_, row) in enumerate(eligible.iterrows()):
         rows.append(
             {
                 "ID Externe": "",
                 "Référence commande": order_reference if index == 0 else "",
-                "Fournisseur/ID": supplier_external_id or _supplier_external_id(row) if index == 0 else "",
+                "Fournisseur/ID": resolved_supplier_id if index == 0 else "",
                 "Lignes de la commande/Description": _line_description(row),
                 "Lignes de la commande/Article/ID": row.get("db_id_externe") or "",
                 "Lignes de la commande/Unité de mesure d'article": row.get("Fact_unite") or row.get("db_unite") or "",
                 "Lignes de la commande/Quantité": row.get("Fact_quantite"),
-                "Lignes de la commande/Prix unitaire": row.get("Fact_PU_Net"),
+                "Lignes de la commande/Prix unitaire": row.get("Fact_PU_unitaire"),
                 "Lignes de la commande/Taxes/ID": DEFAULT_PURCHASE_TAX_ID,
                 "Lignes de la commande/Date prévue": planned_date_text,
             }

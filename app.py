@@ -9,7 +9,7 @@ import streamlit as st
 
 from lmc_po_price.database import load_article_database
 from lmc_po_price.exports import result_workbook_bytes
-from lmc_po_price.invoice_parsing import parse_invoice_pdf
+from lmc_po_price.suppliers import list_suppliers, parse_invoice_pdf, supplier_label
 from lmc_po_price.matching import match_invoice_to_articles
 from lmc_po_price.models import WorkflowConfig, WorkflowResult
 from lmc_po_price.odoo_articles import (
@@ -22,15 +22,16 @@ from lmc_po_price.odoo_articles import (
 from lmc_po_price.odoo_price_update import prepare_odoo_price_update_rows, update_odoo_prices
 from lmc_po_price.odoo_purchase_order import create_purchase_order_from_review
 from lmc_po_price.purchase_order import prepare_purchase_order_import_csv
+from lmc_po_price.supplier_rules import filter_articles_for_supplier
 from lmc_po_price.workflow import _purchase_order_review, unmatched_review
 
 
 st.set_page_config(page_title="Bons de commande et prix Odoo", layout="wide")
 st.title("Bons de commande et prix Odoo")
 
-TASK_PURCHASE_ORDER = "Créer le bon de commande"
-TASK_PRICE_REVIEW = "Comparer / mettre à jour les prix"
-TASK_BOTH = "Créer le bon de commande et comparer les prix"
+TASK_PURCHASE_ORDER = "Créer le Bon de Commande"
+TASK_PRICE_REVIEW = "Mettre à Jour le prix"
+TASK_BOTH = "Créer le Bon de Commande et Mettre à Jour les prix"
 
 
 def _odoo_config_from_streamlit():
@@ -126,7 +127,13 @@ with st.sidebar:
             st.success(st.session_state["database_loaded_from_odoo"])
         database_ready = data_path.exists()
 
-    invoice_file = st.file_uploader("Facture fournisseur", type=["pdf"])
+    st.subheader("Facture fournisseur")
+    selected_supplier_code = st.selectbox(
+        "Fournisseur de la facture",
+        list_suppliers(),
+        format_func=supplier_label,
+    )
+    invoice_file = st.file_uploader("Choisir une facture fournisseur", type=["pdf"])
     selected_task = st.radio(
         "Action à préparer",
         [TASK_BOTH, TASK_PURCHASE_ORDER, TASK_PRICE_REVIEW],
@@ -138,9 +145,10 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 if launch:
     try:
-        invoice = parse_invoice_pdf(invoice_file)
+        invoice = parse_invoice_pdf(invoice_file, expected_supplier_code=selected_supplier_code)
         articles = _load_database(database_mode, database_file)
         config = WorkflowConfig(supplier_code=invoice.supplier_code)
+        articles = filter_articles_for_supplier(articles, config.supplier_code)
         all_lines = match_invoice_to_articles(invoice.lines, articles, config)
         matched = all_lines[all_lines["statut"] == "trouve"].copy()
         unmatched = all_lines[all_lines["statut"] == "non_trouve"].copy()

@@ -24,3 +24,6 @@ class SupplierInvoiceParser(ABC):
     def parse(self, text: str, rows: list[str]) -> ParsedInvoice:
         """Décode le texte et les lignes visuelles du PDF en `ParsedInvoice`."""
 
+    def parse_file(self, file_or_path, text: str, rows: list[str]) -> ParsedInvoice:
+        """Décode un PDF quand un parseur a besoin du fichier source."""
+        return self.parse(text, rows)

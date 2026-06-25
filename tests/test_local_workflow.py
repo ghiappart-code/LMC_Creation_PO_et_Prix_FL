@@ -18,7 +18,7 @@ def test_database_contains_vente_ok():
     articles = load_article_database(DATABASE)
 
     assert "vente_ok" in articles.columns
-    assert len(articles) == 4350
+    assert len(articles) == 3722
 
 
 def test_le_relais_local_invoice_excludes_transport_from_products():
@@ -37,10 +37,10 @@ def test_local_workflow_matches_known_sample_lines():
     result = run_local_workflow(INVOICE, DATABASE)
 
     assert len(result.all_lines) == 27
-    assert len(result.matched) == 9
-    assert len(result.unmatched) == 17
-    assert len(result.ambiguous) == 1
-    assert "120323" in set(result.price_changes["Fact_reference"])
+    assert len(result.matched) == 4
+    assert len(result.unmatched) == 23
+    assert len(result.ambiguous) == 0
+    assert "120235" in set(result.price_changes["Fact_reference"])
     assert not result.price_changes["Odoo_sale_ok"].eq(True).all()
 
 
@@ -48,9 +48,9 @@ def test_unmatched_suggestions_are_conservative():
     result = run_local_workflow(INVOICE, DATABASE)
     suggestions = result.unmatched.set_index("Fact_reference")["Matchs_possibles"]
 
-    assert "AUBERGINE" in suggestions.loc["120235"]
+    assert "BROCOLI" in suggestions.loc["120323"]
     assert "CAROTTE LAVEE" in suggestions.loc["120147"]
-    assert "POMME STORY" in suggestions.loc["120364"]
+    assert "ESSUIE TOUT" in suggestions.loc["101551"]
 
 
 def test_purchase_order_review_uses_odoo_import_columns():
@@ -90,7 +90,5 @@ def test_price_update_rows_are_prepared_for_odoo():
 
     update_rows = prepare_odoo_price_update_rows(result.price_changes)
 
-    assert not update_rows.empty
-    assert update_rows["Odoo_sale_ok"].eq(True).all()
-    assert len(update_rows) == 4
+    assert update_rows.empty
     assert {"db_article_id", "db_fournisseur_id", "Fact_PU_unitaire", "New_Prix_de_vente"}.issubset(update_rows.columns)

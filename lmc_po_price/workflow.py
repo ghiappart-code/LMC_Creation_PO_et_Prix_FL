@@ -14,6 +14,7 @@ from lmc_po_price.invoice_parsing import parse_invoice_pdf
 from lmc_po_price.matching import match_invoice_to_articles
 from lmc_po_price.models import WorkflowConfig, WorkflowResult
 from lmc_po_price.purchase_order import prepare_purchase_order_review
+from lmc_po_price.supplier_rules import filter_articles_for_supplier
 
 
 UNMATCHED_COLUMNS = [
@@ -36,6 +37,7 @@ def run_local_workflow(invoice_path, database_path, config: WorkflowConfig | Non
     invoice = parse_invoice_pdf(invoice_path)
     articles = load_article_database(database_path)
     workflow_config = config or WorkflowConfig(supplier_code=invoice.supplier_code)
+    articles = filter_articles_for_supplier(articles, workflow_config.supplier_code)
     all_lines = match_invoice_to_articles(invoice.lines, articles, workflow_config)
     matched = all_lines[all_lines["statut"] == "trouve"].copy()
     unmatched = all_lines[all_lines["statut"] == "non_trouve"].copy()

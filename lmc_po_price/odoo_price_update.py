@@ -42,7 +42,6 @@ def prepare_odoo_price_update_rows(price_changes: pd.DataFrame) -> pd.DataFrame:
     eligible = price_changes[
         (price_changes["statut"] == "trouve")
         & (price_changes["prix_change"] == True)
-        & (price_changes["ecart_anormal"] == False)
         & (price_changes["peut_etre_mis_a_jour"] == True)
     ].copy()
     if eligible.empty:
@@ -153,4 +152,3 @@ def _is_number(value: object) -> bool:
         return True
     except (TypeError, ValueError):
         return False
-

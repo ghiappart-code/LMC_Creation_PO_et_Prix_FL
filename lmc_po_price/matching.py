@@ -20,9 +20,9 @@ PRIORITY_COLUMNS = [
     "Fact_PU_Net",
     "Fact_PU_Net_GZ",
     "Fact_PU_unitaire",
-    "Match_Methode",
     "DB_Prix_Net",
     "Ecart_Prix",
+    "Ecart_Prix_percent",
     "New_Prix_de_vente",
 ]
 
@@ -70,7 +70,7 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
     current_price = float(product.get("prix_fournisseur") or product.get("cout") or 0)
     difference = invoice_price - current_price
     pct = difference / current_price if current_price else None
-    changed = difference < config.price_decrease_threshold or difference > config.price_increase_threshold
+    changed = round(invoice_price, 2) != round(current_price, 2)
     abnormal = bool(pct is not None and abs(pct) > config.abnormal_ratio and changed)
     base = _invoice_columns(line)
     base.update(_product_columns(product))
@@ -90,8 +90,8 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
             "prix_change": bool(changed),
             "ecart_anormal": abnormal,
             "raison_revue": "ecart de prix anormal" if abnormal else "",
-            "peut_etre_mis_a_jour": bool(changed and not abnormal),
-            "Odoo_sale_ok": bool(changed and not abnormal),
+            "peut_etre_mis_a_jour": bool(changed),
+            "Odoo_sale_ok": bool(changed),
         }
     )
     return base
@@ -248,5 +248,6 @@ def _order_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     priority = [column for column in PRIORITY_COLUMNS if column in df.columns]
-    rest = [column for column in df.columns if column not in priority]
-    return df[priority + rest]
+    trailing = [column for column in ["Match_Methode"] if column in df.columns]
+    rest = [column for column in df.columns if column not in priority and column not in trailing]
+    return df[priority + rest + trailing]

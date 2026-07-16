@@ -75,6 +75,37 @@ def _show_po_creation_diagnostics(results: pd.DataFrame | None) -> None:
         st.dataframe(results, use_container_width=True, hide_index=True)
 
 
+def _dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    display = df.copy()
+    price_columns = [
+        "Fact_PU_Net",
+        "Fact_PU_Net_GZ",
+        "Fact_PU_unitaire",
+        "DB_Prix_Net",
+        "Ecart_Prix",
+        "New_Prix_de_vente",
+        "Fact_montant_HT",
+        "db_cout",
+        "db_prix_fournisseur",
+    ]
+    for column in price_columns:
+        if column in display.columns:
+            display[column] = display[column].map(lambda value: None if pd.isna(value) else f"{value:.2f}")
+    if "Ecart_Prix_percent" in display.columns:
+        display["Ecart_Prix_percent"] = display["Ecart_Prix_percent"].map(
+            lambda value: None if pd.isna(value) else f"{value:.1%}"
+        )
+    return display
+
+
+def _highlight_abnormal_price_rows(row: pd.Series) -> list[str]:
+    style = "background-color: #f8d7da; color: #842029"
+    is_abnormal = bool(row.get("ecart_anormal", False))
+    return [style if is_abnormal else "" for _ in row]
+
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -138,6 +169,13 @@ with st.sidebar:
         "Action à préparer",
         [TASK_BOTH, TASK_PURCHASE_ORDER, TASK_PRICE_REVIEW],
     )
+    abnormal_ratio_percent = st.number_input(
+        "Signalement d'un écart de prix supérieur à (%)",
+        min_value=0,
+        max_value=1000,
+        value=30,
+        step=5,
+    )
     launch = st.button("Lancer l'analyse", type="primary", disabled=not invoice_file or not database_ready)
 
 # ---------------------------------------------------------------------------
@@ -147,7 +185,10 @@ if launch:
     try:
         invoice = parse_invoice_pdf(invoice_file, expected_supplier_code=selected_supplier_code)
         articles = _load_database(database_mode, database_file)
-        config = WorkflowConfig(supplier_code=invoice.supplier_code)
+        config = WorkflowConfig(
+            supplier_code=invoice.supplier_code,
+            abnormal_ratio=float(abnormal_ratio_percent) / 100,
+        )
         articles = filter_articles_for_supplier(articles, config.supplier_code)
         all_lines = match_invoice_to_articles(invoice.lines, articles, config)
         matched = all_lines[all_lines["statut"] == "trouve"].copy()
@@ -252,7 +293,7 @@ tabs = st.tabs(tab_names)
 tab_index = 0
 
 with tabs[tab_index]:
-    st.dataframe(result.all_lines, use_container_width=True, hide_index=True)
+    st.dataframe(_dataframe_for_display(result.all_lines), use_container_width=True, hide_index=True)
 tab_index += 1
 
 if include_purchase_order:
@@ -262,7 +303,15 @@ if include_purchase_order:
 
 if include_price_review:
     with tabs[tab_index]:
-        st.dataframe(result.price_changes, use_container_width=True, hide_index=True)
+        price_changes_display = _dataframe_for_display(result.price_changes)
+        if price_changes_display.empty:
+            st.dataframe(price_changes_display, use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(
+                price_changes_display.style.apply(_highlight_abnormal_price_rows, axis=1),
+                use_container_width=True,
+                hide_index=True,
+            )
     tab_index += 1
 
 with tabs[tab_index]:
@@ -270,7 +319,7 @@ with tabs[tab_index]:
 tab_index += 1
 
 with tabs[tab_index]:
-    st.dataframe(result.ambiguous, use_container_width=True, hide_index=True)
+    st.dataframe(_dataframe_for_display(result.ambiguous), use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
 # Section Odoo — CRÉATION BON DE COMMANDE (hors onglets)

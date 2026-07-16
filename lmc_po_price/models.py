@@ -22,8 +22,6 @@ class ParsedInvoice:
 @dataclass(frozen=True)
 class WorkflowConfig:
     supplier_code: str
-    price_increase_threshold: float = 0.05
-    price_decrease_threshold: float = -0.10
     abnormal_ratio: float = 0.30
 
 
@@ -37,4 +35,3 @@ class WorkflowResult:
     price_changes: pd.DataFrame
     purchase_order_review: pd.DataFrame
     sale_flag_review: pd.DataFrame
-

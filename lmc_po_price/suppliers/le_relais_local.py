@@ -9,6 +9,8 @@ from lmc_po_price.models import ParsedInvoice
 from lmc_po_price.suppliers.base import SupplierInvoiceParser
 from lmc_po_price.text import normalize_key, parse_decimal
 
+UNIT_PATTERN = r"U|KG|irgule|rgule"
+
 
 class LeRelaisLocalParser(SupplierInvoiceParser):
     """Parseur de facture Le Relais Local.
@@ -71,8 +73,9 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
         r"^(?P<designation>.+?)\s+"
         r"(?P<colis>[#A-Z0-9.,]+)\s+"
         r"(?P<quantite>\d+(?:[,.]\d+)?)\s+"
-        r"(?P<unite>U|KG|irgule)?\s*"
+        rf"(?P<unite>{UNIT_PATTERN})?\s*"
         r"(?P<brut>\d+[,.]\d+)\s+"
+        r"(?:(?P<remise>\d+[,.]?\d*)\s+)?"
         r"(?P<net>\d+[,.]\d+)\s+"
         r"(?P<montant>\d+[,.]\d+)\s+"
         r"(?P<tva>\d+)$",
@@ -80,9 +83,7 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
         flags=re.IGNORECASE,
     )
     if structured:
-        unit = (structured.group("unite") or "").upper()
-        if unit == "IRGULE":
-            unit = "KG"
+        unit = _normalize_unit(structured.group("unite"))
         return {
             "reference_fournisseur": reference,
             "designation": _cleanup_designation(structured.group("designation")),
@@ -100,7 +101,7 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
     # Exemple: "120235 AUBERGINE BIO FERME SAINT SA KG 3,90 3,90 3"
     not_delivered = re.match(
         r"^(?P<designation>.+?)\s+"
-        r"(?P<unite>U|KG|irgule)?\s*"
+        rf"(?P<unite>{UNIT_PATTERN})?\s*"
         r"(?P<brut>\d+[,.]\d+)\s+"
         r"(?P<net>\d+[,.]\d+)\s+"
         r"(?P<tva>\d+)$",
@@ -108,9 +109,7 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
         flags=re.IGNORECASE,
     )
     if not_delivered:
-        unit = (not_delivered.group("unite") or "").upper()
-        if unit == "IRGULE":
-            unit = "KG"
+        unit = _normalize_unit(not_delivered.group("unite"))
         return {
             "reference_fournisseur": reference,
             "designation": _cleanup_designation(not_delivered.group("designation")),
@@ -125,6 +124,13 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
         }
 
     return None
+
+
+def _normalize_unit(value: str | None) -> str:
+    unit = (value or "").upper()
+    if unit in {"IRGULE", "RGULE"}:
+        return "KG"
+    return unit
 
 
 def _cleanup_designation(value: str) -> str:
@@ -155,4 +161,3 @@ def _parse_french_date(value: str | None) -> date | None:
         return None
     day, month, year = value.split("/")
     return date(int(year), int(month), int(day))
-

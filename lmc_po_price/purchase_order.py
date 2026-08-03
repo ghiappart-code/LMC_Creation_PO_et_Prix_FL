@@ -57,7 +57,7 @@ def prepare_purchase_order_review(
                 "Référence commande": order_reference if index == 0 else "",
                 "Fournisseur/ID": resolved_supplier_id if index == 0 else "",
                 "Lignes de la commande/Description": _line_description(row),
-                "Lignes de la commande/Article/ID": row.get("db_id_externe") or "",
+                "Lignes de la commande/Article/ID": _product_id(row),
                 "Lignes de la commande/Unité de mesure d'article": row.get("Fact_unite") or row.get("db_unite") or "",
                 "Lignes de la commande/Quantité": row.get("Fact_quantite"),
                 "Lignes de la commande/Prix unitaire": row.get("Fact_PU_unitaire"),
@@ -95,6 +95,13 @@ def _supplier_external_id(row: pd.Series) -> str:
     if pd.isna(supplier_id):
         return ""
     return str(int(float(supplier_id)))
+
+
+def _product_id(row: pd.Series) -> str:
+    product_id = row.get("db_article_id")
+    if not pd.isna(product_id):
+        return str(int(float(product_id)))
+    return str(row.get("db_id_externe") or "")
 
 
 def _format_planned_date(value: date | datetime | None) -> str:

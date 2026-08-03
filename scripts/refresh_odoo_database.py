@@ -3,7 +3,7 @@ from __future__ import annotations
 """Recharge la base articles Odoo locale sans lancer Streamlit.
 
 Le script lit `.streamlit/secrets.toml`, appelle l'extraction Odoo commune, puis
-écrit `echantillons/base_odoo/var_articles.data`. Il sert aux tests locaux et
+écrit `data_files/var_articles.data`. Il sert aux tests locaux et
 évite de dupliquer la logique d'extraction dans un autre script.
 """
 
@@ -22,7 +22,7 @@ from lmc_po_price.odoo_articles import (  # noqa: E402
 )
 
 
-DEFAULT_SAMPLE_DATABASE_PATH = ROOT / "echantillons" / "base_odoo" / "var_articles.data"
+DEFAULT_SAMPLE_DATABASE_PATH = ROOT / "data_files" / "var_articles.data"
 
 
 def main() -> int:

@@ -51,6 +51,9 @@ COLUMN_ALIASES = {
     "categorie_de_marge/nom": "categorie_marge",
     "catégorie_de_marge/nom": "categorie_marge",
     "categorie_de_marge_nom": "categorie_marge",
+    "categorie_de_marge/markup": "categorie_marge_markup",
+    "catégorie_de_marge/markup": "categorie_marge_markup",
+    "categorie_de_marge_markup": "categorie_marge_markup",
     "vente_ok": "vente_ok",
     "sale_ok": "vente_ok",
     "code_barre": "code_barre",
@@ -99,7 +102,7 @@ def normalize_article_database(df: pd.DataFrame) -> pd.DataFrame:
             normalized[column] = normalized[column].fillna("").astype(str).str.strip()
     for column in ["article_id", "fournisseur_id"]:
         normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-    for column in ["cout", "prix_fournisseur", "ratio_unite_fournisseur", "tva"]:
+    for column in ["cout", "prix_fournisseur", "ratio_unite_fournisseur", "tva", "categorie_marge_markup"]:
         if column in normalized:
             normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
     if "ratio_unite_fournisseur" not in normalized:

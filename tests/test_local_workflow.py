@@ -79,6 +79,7 @@ def test_purchase_order_review_uses_odoo_import_columns():
     assert len(result.purchase_order_review) == len(result.matched)
     assert result.purchase_order_review.loc[0, "Référence commande"] == "FC260642740"
     assert result.purchase_order_review.loc[0, "Fournisseur/ID"] == "244"
+    assert str(result.purchase_order_review.loc[0, "Lignes de la commande/Article/ID"]).isdigit()
     assert result.purchase_order_review["Lignes de la commande/Date prévue"].eq("19/06/2026 00:00").all()
 
 
@@ -89,6 +90,7 @@ def test_purchase_order_review_uses_numeric_supplier_id_over_external_id():
                 "statut": "trouve",
                 "db_fournisseur_id": 244.0,
                 "db_fournisseur_id_externe": "__export__.res_partner_244_contact",
+                "db_article_id": 5015.0,
                 "db_id_externe": "__export__.product_product_5015_3bb4a2bc",
                 "Fact_reference": "120153",
                 "Fact_designation": "BETTERAVE CUITE SS VIDE 500G BIO",
@@ -102,6 +104,7 @@ def test_purchase_order_review_uses_numeric_supplier_id_over_external_id():
     review = prepare_purchase_order_review(rows)
 
     assert review.loc[0, "Fournisseur/ID"] == "244"
+    assert review.loc[0, "Lignes de la commande/Article/ID"] == "5015"
 
 
 def test_price_update_rows_are_prepared_for_odoo():

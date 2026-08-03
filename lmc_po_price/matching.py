@@ -86,6 +86,7 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
                 invoice_price,
                 product.get("tva"),
                 product.get("categorie_marge"),
+                product.get("categorie_marge_markup"),
             ),
             "prix_change": bool(changed),
             "ecart_anormal": abnormal,
@@ -192,6 +193,7 @@ def _product_columns(product: pd.Series) -> dict[str, object]:
         "db_ratio_unite": product.get("ratio_unite_fournisseur"),
         "db_tva": product.get("tva"),
         "db_categorie_marge": product.get("categorie_marge"),
+        "db_categorie_marge_markup": product.get("categorie_marge_markup"),
         "db_categorie_mere": product.get("categorie_mere"),
     }
 

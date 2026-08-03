@@ -23,10 +23,15 @@ MARGIN_RATES = {
 UNKNOWN_MARGIN_MESSAGE = "categorie marge a verifier"
 
 
-def sale_price(cost: object, tax_rate: object, margin_category: object) -> float | str:
+def sale_price(
+    cost: object,
+    tax_rate: object,
+    margin_category: object,
+    margin_markup: object = None,
+) -> float | str:
     try:
         margin_text = str(margin_category)
-        margin_rate = MARGIN_RATES[margin_text]
+        margin_rate = _margin_rate(margin_text, margin_markup)
         numeric_cost = float(cost)
         numeric_tax_rate = 0.0 if pd.isna(tax_rate) else float(tax_rate)
         price = numeric_cost * (1 + margin_rate / 100) * (1 + numeric_tax_rate / 100)
@@ -37,6 +42,12 @@ def sale_price(cost: object, tax_rate: object, margin_category: object) -> float
         return UNKNOWN_MARGIN_MESSAGE
 
 
+def _margin_rate(margin_text: str, margin_markup: object) -> float:
+    if margin_markup is not None and not pd.isna(margin_markup):
+        return float(margin_markup)
+    return MARGIN_RATES[margin_text]
+
+
 def _deposit_value(margin_category: str) -> float:
     match = re.search(r"Consigne\s+(.+)$", margin_category)
     if not match:
@@ -44,4 +55,3 @@ def _deposit_value(margin_category: str) -> float:
     raw_value = match.group(1).strip()
     normalized = raw_value.replace("€", ".").replace(",", ".")
     return float(normalized)
-

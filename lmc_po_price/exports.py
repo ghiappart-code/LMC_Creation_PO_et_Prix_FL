@@ -19,6 +19,10 @@ def result_workbook_bytes(
     result: WorkflowResult,
     include_purchase_order: bool = True,
     include_price_review: bool = True,
+    include_developer_sheets: bool = False,
+    price_dry_run_results: pd.DataFrame | None = None,
+    po_dry_run_results: pd.DataFrame | None = None,
+    po_creation_results: pd.DataFrame | None = None,
 ) -> bytes:
     """Construit le classeur de contrôle selon les tâches sélectionnées."""
     sheets = {
@@ -29,8 +33,18 @@ def result_workbook_bytes(
     }
     if include_price_review:
         sheets["changements_prix"] = result.price_changes
+        if price_dry_run_results is not None and not price_dry_run_results.empty:
+            sheets["dry_run_prix_odoo"] = price_dry_run_results
     if include_purchase_order:
         sheets["bon_commande_a_verifier"] = result.purchase_order_review
+        if po_dry_run_results is not None and not po_dry_run_results.empty:
+            sheets["dry_run_po_odoo"] = po_dry_run_results
+        if po_creation_results is not None and not po_creation_results.empty:
+            sheets["creation_po_odoo"] = po_creation_results
+        if include_developer_sheets:
+            numeric_po = _purchase_order_with_numeric_product_ids(result)
+            if not numeric_po.empty:
+                sheets["bon_commande_id_numerique"] = numeric_po
     sheets["notes"] = _notes()
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -50,8 +64,39 @@ def _notes() -> pd.DataFrame:
             {"champ": "ecart_anormal", "description": "Signalement visuel quand l'ecart depasse le seuil choisi; ne bloque pas la mise a jour Odoo."},
             {"champ": "Odoo_sale_ok", "description": "Valeur a envoyer vers Odoo pour sale_ok lors d'une future mise a jour prix eligible."},
             {"champ": "db_vente_ok", "description": "Champ Odoo sale_ok renomme en francais dans la base locale."},
+            {"champ": "dry_run_prix_odoo", "description": "Rapport de verification Odoo sans ecriture avant mise a jour des prix."},
+            {"champ": "dry_run_po_odoo", "description": "Rapport de verification Odoo sans creation avant creation du bon de commande."},
+            {"champ": "creation_po_odoo", "description": "Rapport de creation reelle du bon de commande dans Odoo."},
+            {"champ": "bon_commande_id_numerique", "description": "Onglet diagnostic: meme bon de commande avec Article/ID remplace par l'ID numerique product.product."},
         ]
     )
+
+
+def _purchase_order_with_numeric_product_ids(result: WorkflowResult) -> pd.DataFrame:
+    if result.purchase_order_review.empty or result.matched.empty:
+        return pd.DataFrame()
+
+    output = result.purchase_order_review.reset_index(drop=True).copy()
+    matched = result.matched.reset_index(drop=True)
+    row_count = min(len(output), len(matched))
+    output = output.iloc[:row_count].copy()
+    matched = matched.iloc[:row_count]
+    output.insert(
+        output.columns.get_loc("Lignes de la commande/Article/ID") + 1,
+        "Lignes de la commande/Article/ID externe origine",
+        output["Lignes de la commande/Article/ID"],
+    )
+    output["Lignes de la commande/Article/ID"] = matched["db_article_id"].map(_format_odoo_numeric_id)
+    return output
+
+
+def _format_odoo_numeric_id(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    try:
+        return str(int(float(value)))
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _format_workbook(writer: pd.ExcelWriter) -> None:

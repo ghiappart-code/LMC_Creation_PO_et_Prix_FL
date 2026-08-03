@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import os
 from time import perf_counter
 
 import pandas as pd
@@ -19,8 +20,12 @@ from lmc_po_price.odoo_articles import (
     default_database_path,
     refresh_articles_database,
 )
-from lmc_po_price.odoo_price_update import prepare_odoo_price_update_rows, update_odoo_prices
-from lmc_po_price.odoo_purchase_order import create_purchase_order_from_review
+from lmc_po_price.odoo_price_update import (
+    dry_run_odoo_price_updates,
+    prepare_odoo_price_update_rows,
+    update_odoo_prices,
+)
+from lmc_po_price.odoo_purchase_order import create_purchase_order_from_review, dry_run_purchase_order_from_review
 from lmc_po_price.purchase_order import prepare_purchase_order_import_csv
 from lmc_po_price.supplier_rules import filter_articles_for_supplier
 from lmc_po_price.workflow import _purchase_order_review, unmatched_review
@@ -32,6 +37,9 @@ st.title("Bons de commande et prix Odoo")
 TASK_PURCHASE_ORDER = "Créer le Bon de Commande"
 TASK_PRICE_REVIEW = "Mettre à Jour le prix"
 TASK_BOTH = "Créer le Bon de Commande et Mettre à Jour les prix"
+DATABASE_DEFAULT = "Utiliser la base actuellement disponible"
+DATABASE_UPLOAD = "Choisir une autre base locale"
+DATABASE_ODOO = "Télécharger la base depuis Odoo"
 
 
 def _odoo_config_from_streamlit():
@@ -40,12 +48,49 @@ def _odoo_config_from_streamlit():
     return config_from_env()
 
 
+def _configured_odoo_database_name() -> str:
+    if "odoo" in st.secrets and st.secrets["odoo"].get("database"):
+        return str(st.secrets["odoo"]["database"])
+    return os.getenv("ODOO_DATABASE", "inconnue")
+
+
+def _developer_mode_enabled() -> bool:
+    if os.getenv("LMC_DEVELOPER_MODE", "").strip().casefold() in {"1", "true", "yes", "on"}:
+        return True
+    app_config = st.secrets.get("app", {})
+    return bool(app_config.get("developer_mode", False))
+
+
 def _load_database(database_mode: str, uploaded_file):
-    if database_mode == "Chargement base depuis Odoo":
+    if database_mode in {DATABASE_DEFAULT, DATABASE_ODOO}:
         return load_article_database(default_database_path())
-    if uploaded_file is not None:
+    if database_mode == DATABASE_UPLOAD and uploaded_file is not None:
         return load_article_database(uploaded_file)
-    return load_article_database(default_database_path())
+    raise ValueError("Aucune base articles locale n'a ete choisie.")
+
+
+def _database_source_description(database_mode: str, uploaded_file, path: Path, article_count: int) -> str:
+    if database_mode == DATABASE_ODOO:
+        return f"La base articles Odoo {_configured_odoo_database_name()} est chargée avec {article_count} articles."
+    if database_mode == DATABASE_UPLOAD and uploaded_file is not None:
+        return f"La base articles locale {getattr(uploaded_file, 'name', 'fichier utilisateur')} est chargée avec {article_count} articles."
+    return f"La base articles locale {path.name} est chargée avec {article_count} articles."
+
+
+def _pending_database_description(database_mode: str, uploaded_file, path: Path, ready: bool) -> str:
+    if not ready:
+        return "Base articles non chargee."
+    if database_mode == DATABASE_UPLOAD and uploaded_file is not None:
+        return f"Base articles chargee : {getattr(uploaded_file, 'name', 'fichier utilisateur')}"
+    if database_mode == DATABASE_ODOO and st.session_state.get("database_loaded_from_odoo"):
+        return st.session_state["database_loaded_from_odoo"]
+    status = database_status(path)
+    if status["exists"]:
+        return (
+            f"Base articles disponible : {path.name} "
+            f"({_format_size(int(status['size_bytes']))}, mise a jour {_format_timestamp(status['modified_at'])})"
+        )
+    return "Base articles non chargee."
 
 
 def _format_timestamp(value: float | None) -> str:
@@ -68,11 +113,31 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds:.0f} secondes"
 
 
-def _show_po_creation_diagnostics(results: pd.DataFrame | None) -> None:
+def _show_po_creation_diagnostics(results: pd.DataFrame | None, developer_mode: bool) -> None:
+    if not developer_mode:
+        return
     if results is None or results.empty:
         return
     if st.checkbox("Afficher le diagnostic technique de création Odoo", key="show_po_debug"):
         st.dataframe(results, use_container_width=True, hide_index=True)
+
+
+def _show_preanalysis_status(database_message: str, invoice_file, database_ready: bool) -> None:
+    st.subheader("État de chargement")
+    if database_ready:
+        st.success(database_message)
+    else:
+        st.warning(database_message)
+
+    if invoice_file is not None:
+        st.success(f"Facture chargee : {getattr(invoice_file, 'name', 'fichier facture')}")
+    else:
+        st.warning("Facture fournisseur non chargee.")
+
+    if database_ready and invoice_file is not None:
+        st.info("Les fichiers sont prêts. Lancez l'analyse pour préparer les contrôles Odoo.")
+    else:
+        st.info("Chargez une facture et une base articles, puis lancez l'analyse.")
 
 
 def _dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
@@ -112,9 +177,12 @@ def _highlight_abnormal_price_rows(row: pd.Series) -> list[str]:
 data_path = default_database_path()
 status = database_status(data_path)
 local_database_exists = status["exists"]
+developer_mode = _developer_mode_enabled()
 
 with st.sidebar:
     st.header("Parametres")
+    if developer_mode:
+        st.caption("Mode developpeur actif")
     st.subheader("Base articles")
     if status["exists"]:
         st.info(
@@ -126,19 +194,22 @@ with st.sidebar:
     else:
         st.warning("Aucune base Odoo locale disponible apres relance de l'application.")
 
-    database_mode = st.radio(
-        "Choisir la source de la base",
-        ["Base article locale", "Chargement base depuis Odoo"],
-    )
+    database_options = []
+    if local_database_exists:
+        database_options.append(DATABASE_DEFAULT)
+    database_options.extend([DATABASE_UPLOAD, DATABASE_ODOO])
+    database_mode = st.radio("Choisir la source de la base", database_options)
     database_file = None
 
-    if database_mode == "Base article locale":
+    if database_mode == DATABASE_DEFAULT:
         if local_database_exists:
             st.caption(f"Base locale par defaut disponible : `{data_path.name}`")
         else:
             st.caption("Aucune base locale par defaut n'est disponible.")
-        database_file = st.file_uploader("Choisir une base articles locale", type=["data", "csv", "xlsx", "xls"])
-        database_ready = database_file is not None or local_database_exists
+        database_ready = local_database_exists
+    elif database_mode == DATABASE_UPLOAD:
+        database_file = st.file_uploader("Télécharger une base articles locale", type=["data", "csv", "xlsx", "xls"])
+        database_ready = database_file is not None
     else:
         if local_database_exists:
             st.caption(f"Derniere base extraite : `{data_path.name}`")
@@ -150,7 +221,9 @@ with st.sidebar:
             try:
                 with st.spinner("Extraction des articles depuis Odoo..."):
                     df = refresh_articles_database(_odoo_config_from_streamlit(), data_path)
-                st.session_state["database_loaded_from_odoo"] = f"Base mise a jour : {len(df)} lignes."
+                st.session_state["database_loaded_from_odoo"] = (
+                    f"La base articles Odoo {_configured_odoo_database_name()} est chargée avec {len(df)} articles."
+                )
                 st.rerun()
             except Exception as exc:
                 st.error(f"Impossible de charger la base depuis Odoo : {exc}")
@@ -185,6 +258,7 @@ if launch:
     try:
         invoice = parse_invoice_pdf(invoice_file, expected_supplier_code=selected_supplier_code)
         articles = _load_database(database_mode, database_file)
+        database_article_count = len(articles)
         config = WorkflowConfig(
             supplier_code=invoice.supplier_code,
             abnormal_ratio=float(abnormal_ratio_percent) / 100,
@@ -213,9 +287,19 @@ if launch:
         st.session_state["result"] = result
         st.session_state["price_update_rows"] = price_update_rows
         st.session_state["selected_task"] = selected_task
+        st.session_state["database_source"] = _database_source_description(
+            database_mode,
+            database_file,
+            data_path,
+            database_article_count,
+        )
+        st.session_state["database_row_count"] = database_article_count
+        st.session_state["database_filtered_row_count"] = len(articles)
         # Réinitialiser les confirmations Odoo à chaque nouvelle analyse
         st.session_state.pop("po_created", None)
         st.session_state.pop("po_creation_results", None)
+        st.session_state.pop("po_dry_run_summary", None)
+        st.session_state.pop("price_dry_run_summary", None)
         st.session_state.pop("prices_updated", None)
     except Exception as exc:
         st.error(f"Analyse impossible : {exc}")
@@ -225,7 +309,8 @@ if launch:
 # Affichage — on travaille depuis session_state
 # ---------------------------------------------------------------------------
 if "result" not in st.session_state:
-    st.info("Chargez une facture et une base articles, puis lancez l'analyse.")
+    database_message = _pending_database_description(database_mode, database_file, data_path, database_ready)
+    _show_preanalysis_status(database_message, invoice_file, database_ready)
     st.stop()
 
 result: WorkflowResult = st.session_state["result"]
@@ -235,6 +320,10 @@ current_task = st.session_state.get("selected_task", selected_task)
 
 include_purchase_order = current_task in {TASK_BOTH, TASK_PURCHASE_ORDER}
 include_price_review = current_task in {TASK_BOTH, TASK_PRICE_REVIEW}
+database_source = st.session_state.get("database_source", "Base articles non identifiee")
+database_row_count = st.session_state.get("database_row_count")
+database_filtered_row_count = st.session_state.get("database_filtered_row_count")
+price_dry_run_summary = st.session_state.get("price_dry_run_summary")
 
 # Métriques
 cols = st.columns(5)
@@ -243,18 +332,9 @@ cols[1].metric("Articles trouves", len(result.matched))
 cols[2].metric("Non retrouves", len(result.unmatched))
 cols[3].metric("A verifier", len(result.ambiguous))
 cols[4].metric("Prix changes", len(result.price_changes))
-
-# Téléchargement classeur de contrôle
-st.download_button(
-    "Telecharger le classeur de controle",
-    data=result_workbook_bytes(
-        result,
-        include_purchase_order=include_purchase_order,
-        include_price_review=include_price_review,
-    ),
-    file_name=f"{invoice.invoice_number or 'facture'}_controle_odoo.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+st.caption(database_source)
+if database_filtered_row_count is not None and database_row_count != database_filtered_row_count:
+    st.caption(f"{database_filtered_row_count} article(s) conservé(s) après filtrage fournisseur.")
 
 # ---------------------------------------------------------------------------
 # Résumé des métadonnées
@@ -388,34 +468,62 @@ if include_purchase_order:
 
         if po_review_valid.empty:
             st.error("Aucune ligne valide pour créer le bon de commande.")
-        elif st.session_state.get("po_created"):
-            st.success(st.session_state["po_created"])
-            _show_po_creation_diagnostics(st.session_state.get("po_creation_results"))
         else:
             st.info(f"{len(valid_rows)} ligne(s) valide(s) seront incluses dans le bon de commande.")
-            confirm_po = st.checkbox(
-                "J'ai vérifié le bon de commande et je veux le créer dans Odoo",
-                key="confirm_po",
-            )
-            if st.button("Créer le bon de commande dans Odoo", disabled=not confirm_po, key="create_po"):
+            po_dry_run_summary = st.session_state.get("po_dry_run_summary")
+            po_already_created = bool(st.session_state.get("po_created"))
+            if st.button(
+                "Vérifier le bon de commande sans écriture dans Odoo",
+                disabled=po_already_created,
+                key="dry_run_po",
+            ):
                 try:
-                    with st.spinner("Création du bon de commande dans Odoo..."):
-                        started_at = perf_counter()
-                        summary = create_purchase_order_from_review(
+                    with st.spinner("Vérification du bon de commande sans écriture dans Odoo..."):
+                        po_dry_run_summary = dry_run_purchase_order_from_review(
                             po_review_valid,
                             _odoo_config_from_streamlit(),
                         )
-                        elapsed_seconds = perf_counter() - started_at
-                    if summary.status == "success":
-                        success_message = f"{summary.message} en {_format_duration(elapsed_seconds)}"
-                        st.session_state["po_created"] = success_message
-                        st.session_state["po_creation_results"] = summary.results
-                        st.success(success_message)
-                    else:
-                        st.error(summary.message)
-                    _show_po_creation_diagnostics(summary.results)
+                    st.session_state["po_dry_run_summary"] = po_dry_run_summary
                 except Exception as exc:
-                    st.error(f"Impossible de créer le bon de commande : {exc}")
+                    st.error(f"Impossible de vérifier le bon de commande dans Odoo : {exc}")
+
+            if po_dry_run_summary is not None:
+                if po_dry_run_summary.errors:
+                    st.error(po_dry_run_summary.message)
+                else:
+                    st.success(po_dry_run_summary.message)
+                st.dataframe(po_dry_run_summary.results, use_container_width=True, hide_index=True)
+
+            po_dry_run_ok = po_dry_run_summary is not None and po_dry_run_summary.errors == 0
+            if po_already_created:
+                st.success(st.session_state["po_created"])
+                _show_po_creation_diagnostics(st.session_state.get("po_creation_results"), developer_mode)
+            elif not po_dry_run_ok:
+                st.info("Lancez d'abord la vérification du bon de commande sans écriture dans Odoo.")
+            if not po_already_created:
+                confirm_po = st.checkbox(
+                    "J'ai vérifié le bon de commande et je veux le créer dans Odoo",
+                    key="confirm_po",
+                )
+                if st.button("Créer le bon de commande dans Odoo", disabled=not confirm_po or not po_dry_run_ok, key="create_po"):
+                    try:
+                        with st.spinner("Création du bon de commande dans Odoo..."):
+                            started_at = perf_counter()
+                            summary = create_purchase_order_from_review(
+                                po_review_valid,
+                                _odoo_config_from_streamlit(),
+                            )
+                            elapsed_seconds = perf_counter() - started_at
+                        if summary.status == "success":
+                            success_message = f"{summary.message} en {_format_duration(elapsed_seconds)}"
+                            st.session_state["po_created"] = success_message
+                            st.session_state["po_creation_results"] = summary.results
+                            st.success(success_message)
+                        else:
+                            st.error(summary.message)
+                        _show_po_creation_diagnostics(summary.results, developer_mode)
+                    except Exception as exc:
+                        st.error(f"Impossible de créer le bon de commande : {exc}")
 
 # ---------------------------------------------------------------------------
 # Section Odoo — RAPPROCHEMENT MISE À JOUR DES PRIX (hors onglets)
@@ -427,14 +535,39 @@ if include_price_review:
         st.info("Aucune ligne de changement de prix n'est éligible à une mise à jour automatique.")
     else:
         st.warning(f"{len(price_update_rows)} ligne(s) éligible(s) à la mise à jour Odoo.")
+        dry_run_summary = price_dry_run_summary
+        if st.button("Vérifier la MàJ sans écrire dans Odoo", key="dry_run_prices"):
+            try:
+                with st.spinner("Vérification de la MàJ sans écrire dans Odoo..."):
+                    dry_run_summary = dry_run_odoo_price_updates(price_update_rows, _odoo_config_from_streamlit())
+                st.session_state["price_dry_run_summary"] = dry_run_summary
+            except Exception as exc:
+                st.error(f"Impossible de vérifier les prix dans Odoo : {exc}")
+
+        if dry_run_summary is not None:
+            if dry_run_summary.errors:
+                st.error(
+                    f"Vérification Odoo avec erreurs : {dry_run_summary.success} prêt(s), "
+                    f"{dry_run_summary.warnings} avertissement(s), {dry_run_summary.errors} erreur(s)."
+                )
+            else:
+                st.success(
+                    f"Vérification Odoo terminée : {dry_run_summary.success} prêt(s), "
+                    f"{dry_run_summary.warnings} avertissement(s), 0 erreur."
+                )
+            st.dataframe(dry_run_summary.results, use_container_width=True, hide_index=True)
+
         if st.session_state.get("prices_updated"):
             st.success(st.session_state["prices_updated"])
         else:
+            dry_run_ok = dry_run_summary is not None and dry_run_summary.errors == 0
+            if not dry_run_ok:
+                st.info("Lancez d'abord la vérification de la MàJ sans écrire dans Odoo.")
             confirm_prices = st.checkbox(
                 "J'ai vérifié les changements de prix et je veux mettre à jour Odoo",
                 key="confirm_prices",
             )
-            if st.button("Mettre à jour les prix dans Odoo", disabled=not confirm_prices, key="update_prices"):
+            if st.button("Mettre à jour les prix dans Odoo", disabled=not confirm_prices or not dry_run_ok, key="update_prices"):
                 try:
                     with st.spinner("Mise à jour des prix dans Odoo..."):
                         summary = update_odoo_prices(price_update_rows, _odoo_config_from_streamlit())
@@ -458,4 +591,26 @@ if include_price_review:
 st.caption(
     "Les écritures Odoo ne sont jamais automatiques : elles ne sont lancées "
     "qu'après vérification et validation explicite par case à cocher."
+)
+
+st.divider()
+st.subheader("Classeur de contrôle")
+price_dry_run_summary = st.session_state.get("price_dry_run_summary")
+price_dry_run_results = price_dry_run_summary.results if price_dry_run_summary is not None else None
+po_dry_run_summary = st.session_state.get("po_dry_run_summary")
+po_dry_run_results = po_dry_run_summary.results if po_dry_run_summary is not None else None
+po_creation_results = st.session_state.get("po_creation_results")
+st.download_button(
+    "Telecharger le classeur de controle",
+    data=result_workbook_bytes(
+        result,
+        include_purchase_order=include_purchase_order,
+        include_price_review=include_price_review,
+        include_developer_sheets=developer_mode,
+        price_dry_run_results=price_dry_run_results,
+        po_dry_run_results=po_dry_run_results,
+        po_creation_results=po_creation_results,
+    ),
+    file_name=f"{invoice.invoice_number or 'facture'}_controle_odoo.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )

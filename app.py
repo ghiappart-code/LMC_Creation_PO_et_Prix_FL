@@ -28,7 +28,7 @@ from lmc_po_price.odoo_price_update import (
 from lmc_po_price.odoo_purchase_order import create_purchase_order_from_review, dry_run_purchase_order_from_review
 from lmc_po_price.purchase_order import prepare_purchase_order_import_csv
 from lmc_po_price.supplier_rules import filter_articles_for_supplier
-from lmc_po_price.workflow import _purchase_order_review, unmatched_review
+from lmc_po_price.workflow import _purchase_order_review, blocked_price_changes, unmatched_review
 
 
 st.set_page_config(page_title="Bons de commande et prix Odoo", layout="wide")
@@ -157,18 +157,40 @@ def _dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
     ]
     for column in price_columns:
         if column in display.columns:
-            display[column] = display[column].map(lambda value: None if pd.isna(value) else f"{value:.2f}")
+            display[column] = display[column].map(_format_optional_decimal)
     if "Ecart_Prix_percent" in display.columns:
-        display["Ecart_Prix_percent"] = display["Ecart_Prix_percent"].map(
-            lambda value: None if pd.isna(value) else f"{value:.1%}"
-        )
+        display["Ecart_Prix_percent"] = display["Ecart_Prix_percent"].map(_format_optional_percent)
     return display
+
+
+def _format_optional_decimal(value: object) -> object:
+    if pd.isna(value):
+        return None
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return value
+
+
+def _format_optional_percent(value: object) -> object:
+    if pd.isna(value):
+        return None
+    try:
+        return f"{float(value):.1%}"
+    except (TypeError, ValueError):
+        return value
 
 
 def _highlight_abnormal_price_rows(row: pd.Series) -> list[str]:
     style = "background-color: #f8d7da; color: #842029"
     is_abnormal = bool(row.get("ecart_anormal", False))
     return [style if is_abnormal else "" for _ in row]
+
+
+def _highlight_price_change_rows(row: pd.Series) -> list[str]:
+    if bool(row.get("prix_change", False)) and not bool(row.get("peut_etre_mis_a_jour", True)):
+        return ["background-color: #fff3cd; color: #664d03; font-weight: 600" for _ in row]
+    return _highlight_abnormal_price_rows(row)
 
 
 # ---------------------------------------------------------------------------
@@ -324,14 +346,16 @@ database_source = st.session_state.get("database_source", "Base articles non ide
 database_row_count = st.session_state.get("database_row_count")
 database_filtered_row_count = st.session_state.get("database_filtered_row_count")
 price_dry_run_summary = st.session_state.get("price_dry_run_summary")
+blocked_changes = blocked_price_changes(result.price_changes)
 
 # Métriques
-cols = st.columns(5)
+cols = st.columns(6)
 cols[0].metric("Lignes facture", len(invoice.lines))
 cols[1].metric("Articles trouves", len(result.matched))
 cols[2].metric("Non retrouves", len(result.unmatched))
-cols[3].metric("A verifier", len(result.ambiguous))
+cols[3].metric("Matching article/DB ambigu", len(result.ambiguous))
 cols[4].metric("Prix changes", len(result.price_changes))
+cols[5].metric("Changements bloqués", len(blocked_changes))
 st.caption(database_source)
 if database_filtered_row_count is not None and database_row_count != database_filtered_row_count:
     st.caption(f"{database_filtered_row_count} article(s) conservé(s) après filtrage fournisseur.")
@@ -367,7 +391,8 @@ if include_purchase_order:
     tab_names.append("Bon de commande")
 if include_price_review:
     tab_names.append("Changements de prix")
-tab_names.extend(["Non retrouves", "A verifier"])
+    tab_names.append("Changements bloqués")
+tab_names.extend(["Non retrouves", "Matching article/DB ambigu"])
 
 tabs = st.tabs(tab_names)
 tab_index = 0
@@ -387,11 +412,24 @@ if include_price_review:
         if price_changes_display.empty:
             st.dataframe(price_changes_display, use_container_width=True, hide_index=True)
         else:
+            if not blocked_changes.empty:
+                st.warning(
+                    f"{len(blocked_changes)} changement(s) de prix sont bloqués et surlignés ci-dessous."
+                )
             st.dataframe(
-                price_changes_display.style.apply(_highlight_abnormal_price_rows, axis=1),
+                price_changes_display.style.apply(_highlight_price_change_rows, axis=1),
                 use_container_width=True,
                 hide_index=True,
             )
+    tab_index += 1
+
+    with tabs[tab_index]:
+        blocked_display = _dataframe_for_display(blocked_changes)
+        if blocked_display.empty:
+            st.success("Aucun changement de prix bloqué.")
+        else:
+            st.warning("Ces changements de prix demandent une correction ou une décision manuelle avant écriture Odoo.")
+            st.dataframe(blocked_display, use_container_width=True, hide_index=True)
     tab_index += 1
 
 with tabs[tab_index]:

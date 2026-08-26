@@ -10,7 +10,7 @@ from __future__ import annotations
 import pandas as pd
 
 from lmc_po_price.models import WorkflowConfig
-from lmc_po_price.pricing import sale_price
+from lmc_po_price.pricing import UNKNOWN_MARGIN_MESSAGE, sale_price
 from lmc_po_price.text import normalize_key
 
 
@@ -72,6 +72,13 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
     pct = difference / current_price if current_price else None
     changed = round(invoice_price, 2) != round(current_price, 2)
     abnormal = bool(pct is not None and abs(pct) > config.abnormal_ratio and changed)
+    new_sale_price = sale_price(
+        invoice_price,
+        product.get("tva"),
+        product.get("categorie_marge"),
+        product.get("categorie_marge_markup"),
+    )
+    missing_margin = changed and new_sale_price == UNKNOWN_MARGIN_MESSAGE
     base = _invoice_columns(line)
     base.update(_product_columns(product))
     base.update(
@@ -82,20 +89,31 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
             "DB_Prix_Net": current_price,
             "Ecart_Prix": difference,
             "Ecart_Prix_percent": pct,
-            "New_Prix_de_vente": sale_price(
-                invoice_price,
-                product.get("tva"),
-                product.get("categorie_marge"),
-                product.get("categorie_marge_markup"),
-            ),
+            "New_Prix_de_vente": new_sale_price,
             "prix_change": bool(changed),
             "ecart_anormal": abnormal,
-            "raison_revue": "ecart de prix anormal" if abnormal else "",
-            "peut_etre_mis_a_jour": bool(changed),
-            "Odoo_sale_ok": bool(changed),
+            "raison_revue": _matched_review_reason(abnormal, missing_margin, current_price, invoice_price),
+            "peut_etre_mis_a_jour": bool(changed and not missing_margin),
+            "Odoo_sale_ok": bool(changed and not missing_margin),
         }
     )
     return base
+
+
+def _matched_review_reason(
+    abnormal: bool,
+    missing_margin: bool,
+    current_price: float,
+    invoice_price: float,
+) -> str:
+    reasons: list[str] = []
+    if abnormal:
+        reasons.append("ecart de prix anormal")
+    if missing_margin:
+        reasons.append(
+            f"{UNKNOWN_MARGIN_MESSAGE}; prix fournisseur modifie de {current_price:.2f} a {invoice_price:.2f}"
+        )
+    return "; ".join(reasons)
 
 
 def _review_row(line: pd.Series, candidates: pd.DataFrame, reason: str) -> dict[str, object]:

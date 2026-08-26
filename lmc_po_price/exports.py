@@ -12,7 +12,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from lmc_po_price.models import WorkflowResult
-from lmc_po_price.workflow import unmatched_review
+from lmc_po_price.workflow import blocked_price_changes, unmatched_review
 
 
 def result_workbook_bytes(
@@ -33,6 +33,9 @@ def result_workbook_bytes(
     }
     if include_price_review:
         sheets["changements_prix"] = result.price_changes
+        blocked = blocked_price_changes(result.price_changes)
+        if not blocked.empty:
+            sheets["changements_prix_bloques"] = blocked
         if price_dry_run_results is not None and not price_dry_run_results.empty:
             sheets["dry_run_prix_odoo"] = price_dry_run_results
     if include_purchase_order:
@@ -61,6 +64,7 @@ def _notes() -> pd.DataFrame:
             {"champ": "Fact_PU_unitaire", "description": "Prix facture converti dans l'unite Odoo lorsque la base fournit un ratio d'unite fournisseur."},
             {"champ": "statut", "description": "trouve, non_trouve ou a_verifier."},
             {"champ": "peut_etre_mis_a_jour", "description": "Vrai si le match est certain et si le prix facture differe du prix Odoo a la deuxieme decimale."},
+            {"champ": "changements_prix_bloques", "description": "Changements de prix dont le prix de vente ne peut pas etre calcule automatiquement; lire raison_revue."},
             {"champ": "ecart_anormal", "description": "Signalement visuel quand l'ecart depasse le seuil choisi; ne bloque pas la mise a jour Odoo."},
             {"champ": "Odoo_sale_ok", "description": "Valeur a envoyer vers Odoo pour sale_ok lors d'une future mise a jour prix eligible."},
             {"champ": "db_vente_ok", "description": "Champ Odoo sale_ok renomme en francais dans la base locale."},

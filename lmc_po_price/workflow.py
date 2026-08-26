@@ -13,6 +13,7 @@ from lmc_po_price.database import load_article_database
 from lmc_po_price.invoice_parsing import parse_invoice_pdf
 from lmc_po_price.matching import match_invoice_to_articles
 from lmc_po_price.models import WorkflowConfig, WorkflowResult
+from lmc_po_price.pricing import UNKNOWN_MARGIN_MESSAGE
 from lmc_po_price.purchase_order import prepare_purchase_order_review
 from lmc_po_price.supplier_rules import filter_articles_for_supplier
 
@@ -76,3 +77,17 @@ def _purchase_order_review(
 def unmatched_review(unmatched: pd.DataFrame) -> pd.DataFrame:
     available = [column for column in UNMATCHED_COLUMNS if column in unmatched]
     return unmatched[available].copy()
+
+
+def blocked_price_changes(price_changes: pd.DataFrame) -> pd.DataFrame:
+    """Retourne les changements dont le prix de vente ne peut pas etre calcule."""
+    required = {"prix_change", "New_Prix_de_vente"}
+    if price_changes.empty or not required.issubset(price_changes.columns):
+        return pd.DataFrame(columns=price_changes.columns)
+    blocked = price_changes[
+        (price_changes["prix_change"] == True)
+        & (price_changes["New_Prix_de_vente"] == UNKNOWN_MARGIN_MESSAGE)
+    ].copy()
+    if blocked.empty or "raison_revue" not in blocked:
+        return blocked
+    return blocked[["raison_revue", *[column for column in blocked.columns if column != "raison_revue"]]]

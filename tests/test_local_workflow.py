@@ -5,9 +5,12 @@ import pytest
 
 from lmc_po_price.database import load_article_database
 from lmc_po_price.invoice_parsing import parse_invoice_pdf
+from lmc_po_price.matching import match_invoice_to_articles
+from lmc_po_price.models import WorkflowConfig
 from lmc_po_price.odoo_price_update import prepare_odoo_price_update_rows
 from lmc_po_price.purchase_order import ODOO_PO_COLUMNS, prepare_purchase_order_review
-from lmc_po_price.workflow import run_local_workflow
+from lmc_po_price.pricing import UNKNOWN_MARGIN_MESSAGE
+from lmc_po_price.workflow import blocked_price_changes, run_local_workflow
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,3 +136,52 @@ def test_abnormal_price_change_is_signaled_but_still_eligible_for_odoo():
 
     update_rows = prepare_odoo_price_update_rows(result.price_changes)
     assert int(courgette["db_article_id"]) in set(update_rows["db_article_id"].astype(int))
+
+
+def test_missing_margin_blocks_price_update_but_keeps_price_change_visible():
+    invoice_lines = pd.DataFrame(
+        [
+            {
+                "reference_fournisseur": "101330",
+                "designation": "ROBINET 20L POUR FUT BULLE VERTE acc",
+                "quantite": 1,
+                "unite": "U",
+                "prix_unitaire": 3.45,
+                "prix_unitaire_ajuste": 3.465525,
+                "montant_ht": 3.45,
+                "taux_transport": 0.0045,
+            }
+        ]
+    )
+    articles = pd.DataFrame(
+        [
+            {
+                "article_id": 17637,
+                "nom": "ROBINET 20L POUR FUT",
+                "fournisseur_id": 244,
+                "reference_fournisseur": "101330",
+                "reference_fournisseur_key": "101330",
+                "cout": 0.0,
+                "prix_fournisseur": 0.0,
+                "ratio_unite_fournisseur": 1.0,
+                "tva": 5.5,
+                "categorie_marge": "",
+                "categorie_marge_markup": pd.NA,
+            }
+        ]
+    )
+
+    result = match_invoice_to_articles(invoice_lines, articles, WorkflowConfig(supplier_code="244"))
+    price_changes = result[result["prix_change"]].copy()
+    robinet = price_changes.set_index("Fact_reference").loc["101330"]
+    assert robinet["New_Prix_de_vente"] == UNKNOWN_MARGIN_MESSAGE
+    assert bool(robinet["prix_change"]) is True
+    assert bool(robinet["peut_etre_mis_a_jour"]) is False
+    assert "categorie marge a verifier" in robinet["raison_revue"]
+    assert "prix fournisseur modifie" in robinet["raison_revue"]
+
+    blocked = blocked_price_changes(price_changes).set_index("Fact_reference")
+    assert "101330" in blocked.index
+
+    update_rows = prepare_odoo_price_update_rows(price_changes)
+    assert 17637 not in set(update_rows["db_article_id"].astype(int))

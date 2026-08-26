@@ -250,3 +250,35 @@ Conclusion :
   sont derriere le flag developpeur, et les onglets temporaires sont soit
   retires du mode utilisateur normal, soit documentes quand ils doivent rester
   accessibles aux developpeurs.
+
+### 2026-08-26 - Correctif, prix de vente non calculable
+
+Contexte :
+
+- la facture `FC260844096.pdf` contient l'article fournisseur `101330`,
+  retrouve dans Odoo mais sans categorie de marge ni markup exploitable;
+- le prix fournisseur change, mais le prix de vente ne peut pas etre calcule
+  automatiquement.
+
+Modification locale realisee :
+
+- la valeur texte `categorie marge a verifier` ne fait plus planter
+  l'affichage Streamlit des colonnes de prix;
+- la ligne reste visible dans `changements_prix`, car le prix fournisseur a
+  bien change;
+- la ligne est exclue de l'ecriture automatique Odoo avec
+  `peut_etre_mis_a_jour=False`;
+- la raison de blocage indique explicitement que la categorie de marge est a
+  verifier et rappelle le changement de prix fournisseur;
+- un onglet `Changements bloques` est ajoute dans Streamlit, et un onglet
+  `changements_prix_bloques` est ajoute au classeur de controle quand au moins
+  un changement de prix ne permet pas de calculer le prix de vente;
+- le libelle utilisateur `A verifier` est renomme
+  `Matching article/DB ambigu`, pour distinguer les problemes de matching
+  article des changements de prix bloques.
+
+Validation locale :
+
+- avec `FC260844096.pdf` et `data_files/var_articles.data`, le workflow donne
+  27 articles trouves, 26 changements de prix, 1 changement bloque et
+  25 lignes eligibles a l'ecriture automatique Odoo.

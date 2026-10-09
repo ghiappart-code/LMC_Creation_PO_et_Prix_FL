@@ -32,6 +32,13 @@ UNMATCHED_COLUMNS = [
     "raison_revue",
 ]
 
+AMBIGUOUS_COLUMNS_FIRST = [
+    "Fact_reference",
+    "Fact_designation",
+    "raison_revue",
+    "Matchs_possibles",
+]
+
 
 def run_local_workflow(invoice_path, database_path, config: WorkflowConfig | None = None) -> WorkflowResult:
     """Exécute le workflow complet à partir de fichiers locaux de test."""
@@ -77,6 +84,12 @@ def _purchase_order_review(
 def unmatched_review(unmatched: pd.DataFrame) -> pd.DataFrame:
     available = [column for column in UNMATCHED_COLUMNS if column in unmatched]
     return unmatched[available].copy()
+
+
+def ambiguous_review(ambiguous: pd.DataFrame) -> pd.DataFrame:
+    ordered_columns = [column for column in AMBIGUOUS_COLUMNS_FIRST if column in ambiguous]
+    ordered_columns.extend(column for column in ambiguous.columns if column not in ordered_columns)
+    return ambiguous[ordered_columns].copy()
 
 
 def blocked_price_changes(price_changes: pd.DataFrame) -> pd.DataFrame:

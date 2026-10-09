@@ -28,7 +28,7 @@ from lmc_po_price.odoo_price_update import (
 from lmc_po_price.odoo_purchase_order import create_purchase_order_from_review, dry_run_purchase_order_from_review
 from lmc_po_price.purchase_order import prepare_purchase_order_import_csv
 from lmc_po_price.supplier_rules import filter_articles_for_supplier
-from lmc_po_price.workflow import _purchase_order_review, blocked_price_changes, unmatched_review
+from lmc_po_price.workflow import _purchase_order_review, ambiguous_review, blocked_price_changes, unmatched_review
 
 
 st.set_page_config(page_title="Bons de commande et prix Odoo", layout="wide")
@@ -437,7 +437,7 @@ with tabs[tab_index]:
 tab_index += 1
 
 with tabs[tab_index]:
-    st.dataframe(_dataframe_for_display(result.ambiguous), use_container_width=True, hide_index=True)
+    st.dataframe(_dataframe_for_display(ambiguous_review(result.ambiguous)), use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
 # Section Odoo — CRÉATION BON DE COMMANDE (hors onglets)

@@ -13,7 +13,7 @@ from lmc_po_price.models import ParsedInvoice, WorkflowConfig, WorkflowResult
 from lmc_po_price.odoo_price_update import prepare_odoo_price_update_rows
 from lmc_po_price.purchase_order import ODOO_PO_COLUMNS, prepare_purchase_order_review
 from lmc_po_price.pricing import UNKNOWN_MARGIN_MESSAGE
-from lmc_po_price.workflow import blocked_price_changes, run_local_workflow
+from lmc_po_price.workflow import ambiguous_review, blocked_price_changes, run_local_workflow
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,6 +154,28 @@ def test_ambiguous_export_places_review_columns_after_designation():
         "Fact_designation",
         "raison_revue",
         "Matchs_possibles",
+    ]
+
+
+def test_ambiguous_review_places_review_columns_after_designation():
+    ambiguous = pd.DataFrame(
+        columns=[
+            "Fact_reference",
+            "Fact_designation",
+            "Fact_PU_Net",
+            "raison_revue",
+            "Matchs_possibles",
+            "statut",
+        ]
+    )
+
+    assert list(ambiguous_review(ambiguous).columns) == [
+        "Fact_reference",
+        "Fact_designation",
+        "raison_revue",
+        "Matchs_possibles",
+        "Fact_PU_Net",
+        "statut",
     ]
 
 

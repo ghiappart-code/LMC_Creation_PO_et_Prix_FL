@@ -29,7 +29,7 @@ def result_workbook_bytes(
         "tous_les_articles_facture": result.all_lines,
         "articles_trouves": result.matched,
         "articles_non_retrouves": unmatched_review(result.unmatched),
-        "articles_ambigus": result.ambiguous,
+        "articles_ambigus": _ambiguous_review(result.ambiguous),
     }
     if include_price_review:
         sheets["changements_prix"] = result.price_changes
@@ -55,6 +55,18 @@ def result_workbook_bytes(
             df.to_excel(writer, index=False, sheet_name=name[:31])
         _format_workbook(writer)
     return buffer.getvalue()
+
+
+def _ambiguous_review(ambiguous: pd.DataFrame) -> pd.DataFrame:
+    priority_columns = [
+        "Fact_reference",
+        "Fact_designation",
+        "raison_revue",
+        "Matchs_possibles",
+    ]
+    ordered_columns = [column for column in priority_columns if column in ambiguous]
+    ordered_columns.extend(column for column in ambiguous.columns if column not in ordered_columns)
+    return ambiguous[ordered_columns].copy()
 
 
 def _notes() -> pd.DataFrame:

@@ -1,12 +1,15 @@
 from pathlib import Path
+from io import BytesIO
 
+from openpyxl import load_workbook
 import pandas as pd
 import pytest
 
 from lmc_po_price.database import load_article_database
+from lmc_po_price.exports import result_workbook_bytes
 from lmc_po_price.invoice_parsing import parse_invoice_pdf
 from lmc_po_price.matching import match_invoice_to_articles
-from lmc_po_price.models import WorkflowConfig
+from lmc_po_price.models import ParsedInvoice, WorkflowConfig, WorkflowResult
 from lmc_po_price.odoo_price_update import prepare_odoo_price_update_rows
 from lmc_po_price.purchase_order import ODOO_PO_COLUMNS, prepare_purchase_order_review
 from lmc_po_price.pricing import UNKNOWN_MARGIN_MESSAGE
@@ -108,6 +111,50 @@ def test_purchase_order_review_uses_numeric_supplier_id_over_external_id():
 
     assert review.loc[0, "Fournisseur/ID"] == "244"
     assert review.loc[0, "Lignes de la commande/Article/ID"] == "5015"
+
+
+def test_ambiguous_export_places_review_columns_after_designation():
+    ambiguous = pd.DataFrame(
+        [
+            {
+                "Fact_reference": "120001",
+                "Fact_designation": "ARTICLE A VERIFIER",
+                "Fact_PU_Net": 1.23,
+                "raison_revue": "plusieurs articles Odoo utilisent cette reference fournisseur",
+                "Matchs_possibles": "5015 - ARTICLE 1\n5016 - ARTICLE 2",
+                "statut": "a_verifier",
+            }
+        ]
+    )
+    invoice = ParsedInvoice(
+        supplier_name="Fournisseur test",
+        supplier_code="244",
+        invoice_number="TEST",
+        invoice_date=None,
+        delivery_date=None,
+        lines=pd.DataFrame(),
+        charges=pd.DataFrame(),
+    )
+    result = WorkflowResult(
+        invoice=invoice,
+        all_lines=ambiguous,
+        matched=pd.DataFrame(),
+        unmatched=pd.DataFrame(),
+        ambiguous=ambiguous,
+        price_changes=pd.DataFrame(),
+        purchase_order_review=pd.DataFrame(),
+        sale_flag_review=pd.DataFrame(),
+    )
+
+    workbook = load_workbook(BytesIO(result_workbook_bytes(result)))
+    headers = [cell.value for cell in workbook["articles_ambigus"][1]]
+
+    assert headers[:4] == [
+        "Fact_reference",
+        "Fact_designation",
+        "raison_revue",
+        "Matchs_possibles",
+    ]
 
 
 def test_price_update_rows_are_prepared_for_odoo():

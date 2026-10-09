@@ -353,7 +353,7 @@ cols = st.columns(6)
 cols[0].metric("Lignes facture", len(invoice.lines))
 cols[1].metric("Articles trouves", len(result.matched))
 cols[2].metric("Non retrouves", len(result.unmatched))
-cols[3].metric("Matching article/DB ambigu", len(result.ambiguous))
+cols[3].metric("Matching DB ambigus", len(result.ambiguous))
 cols[4].metric("Prix changes", len(result.price_changes))
 cols[5].metric("Changements bloqués", len(blocked_changes))
 st.caption(database_source)
@@ -392,7 +392,7 @@ if include_purchase_order:
 if include_price_review:
     tab_names.append("Changements de prix")
     tab_names.append("Changements bloqués")
-tab_names.extend(["Non retrouves", "Matching article/DB ambigu"])
+tab_names.extend(["Non retrouves", "Matching DB ambigus"])
 
 tabs = st.tabs(tab_names)
 tab_index = 0

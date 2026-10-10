@@ -216,10 +216,10 @@ with st.sidebar:
     else:
         st.warning("Aucune base Odoo locale disponible apres relance de l'application.")
 
-    database_options = []
+    database_options = [DATABASE_ODOO]
     if local_database_exists:
         database_options.append(DATABASE_DEFAULT)
-    database_options.extend([DATABASE_UPLOAD, DATABASE_ODOO])
+    database_options.append(DATABASE_UPLOAD)
     database_mode = st.radio("Choisir la source de la base", database_options)
     database_file = None
 
@@ -239,7 +239,7 @@ with st.sidebar:
             st.caption("Aucune base extraite depuis Odoo pour le moment.")
         odoo_database = st.secrets.get("odoo", {}).get("database", "inconnue")
         st.caption(f"Base Odoo : `{odoo_database}`")
-        if st.button("Charger la base depuis Odoo"):
+        if st.button("Télécharger la base depuis Odoo"):
             try:
                 with st.spinner("Extraction des articles depuis Odoo..."):
                     df = refresh_articles_database(_odoo_config_from_streamlit(), data_path)
@@ -537,13 +537,13 @@ if include_purchase_order:
                 st.success(st.session_state["po_created"])
                 _show_po_creation_diagnostics(st.session_state.get("po_creation_results"), developer_mode)
             elif not po_dry_run_ok:
-                st.info("Lancez d'abord la vérification du bon de commande sans écriture dans Odoo.")
+                st.info("Vous pouvez lancer une vérification du bon de commande sans écriture dans Odoo.")
             if not po_already_created:
                 confirm_po = st.checkbox(
                     "J'ai vérifié le bon de commande et je veux le créer dans Odoo",
                     key="confirm_po",
                 )
-                if st.button("Créer le bon de commande dans Odoo", disabled=not confirm_po or not po_dry_run_ok, key="create_po"):
+                if st.button("Créer le bon de commande dans Odoo", disabled=not confirm_po, key="create_po"):
                     try:
                         with st.spinner("Création du bon de commande dans Odoo..."):
                             started_at = perf_counter()
@@ -600,12 +600,12 @@ if include_price_review:
         else:
             dry_run_ok = dry_run_summary is not None and dry_run_summary.errors == 0
             if not dry_run_ok:
-                st.info("Lancez d'abord la vérification de la MàJ sans écrire dans Odoo.")
+                st.info("Vous pouvez lancer une vérification de la MàJ sans écrire dans Odoo.")
             confirm_prices = st.checkbox(
                 "J'ai vérifié les changements de prix et je veux mettre à jour Odoo",
                 key="confirm_prices",
             )
-            if st.button("Mettre à jour les prix dans Odoo", disabled=not confirm_prices or not dry_run_ok, key="update_prices"):
+            if st.button("Mettre à jour les prix dans Odoo", disabled=not confirm_prices, key="update_prices"):
                 try:
                     with st.spinner("Mise à jour des prix dans Odoo..."):
                         summary = update_odoo_prices(price_update_rows, _odoo_config_from_streamlit())

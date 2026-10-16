@@ -657,52 +657,51 @@ if include_labels:
                 label_report_name,
             )
 
-        labels_ready = label_dry_run_summary.ready > 0 and label_dry_run_summary.errors == 0
-        if st.session_state.get("labels_pdf") and st.session_state.get("labels_pdf_message"):
-            st.success(st.session_state["labels_pdf_message"])
-            st.download_button(
-                "Télécharger les étiquettes PDF",
-                data=st.session_state["labels_pdf"],
-                file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
-                mime="application/pdf",
-                key="download_labels_pdf",
-            )
-        else:
-            confirm_labels = st.checkbox(
-                "J'ai vérifié les étiquettes et je veux générer le PDF",
-                key="confirm_labels",
-                disabled=not labels_ready,
-            )
-            if st.button("Générer le PDF des étiquettes", disabled=not confirm_labels, key="generate_labels_pdf"):
-                try:
-                    with st.spinner("Génération du PDF des étiquettes depuis Odoo..."):
-                        summary = generate_labels_pdf_from_invoice_lines(
-                            result.all_lines,
-                            _odoo_config_from_streamlit(),
-                            print_category_id=label_print_category_id,
-                            report_name=label_report_name,
-                        )
-                    if summary.status == "success" and summary.pdf:
-                        st.session_state["labels_pdf"] = summary.pdf
-                        st.session_state["labels_pdf_message"] = summary.message
-                        st.success(summary.message)
-                        st.download_button(
-                            "Télécharger les étiquettes PDF",
-                            data=summary.pdf,
-                            file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
-                            mime="application/pdf",
-                            key="download_labels_pdf_after_generation",
-                        )
-                    else:
-                        st.error(summary.message)
-                        _show_label_diagnostics(
-                            summary.excluded_lines,
-                            developer_mode,
-                            label_print_category_id,
-                            label_report_name,
-                        )
-                except Exception as exc:
-                    st.error(f"Impossible de générer le PDF des étiquettes : {exc}")
+    # Génération du PDF : indépendante de la vérification (comme pour le bon de commande)
+    if st.session_state.get("labels_pdf") and st.session_state.get("labels_pdf_message"):
+        st.success(st.session_state["labels_pdf_message"])
+        st.download_button(
+            "Télécharger les étiquettes PDF",
+            data=st.session_state["labels_pdf"],
+            file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
+            mime="application/pdf",
+            key="download_labels_pdf",
+        )
+    else:
+        confirm_labels = st.checkbox(
+            "J'ai vérifié les étiquettes et je veux générer le PDF",
+            key="confirm_labels",
+        )
+        if st.button("Générer le PDF des étiquettes", disabled=not confirm_labels, key="generate_labels_pdf"):
+            try:
+                with st.spinner("Génération du PDF des étiquettes depuis Odoo..."):
+                    summary = generate_labels_pdf_from_invoice_lines(
+                        result.all_lines,
+                        _odoo_config_from_streamlit(),
+                        print_category_id=label_print_category_id,
+                        report_name=label_report_name,
+                    )
+                if summary.status == "success" and summary.pdf:
+                    st.session_state["labels_pdf"] = summary.pdf
+                    st.session_state["labels_pdf_message"] = summary.message
+                    st.success(summary.message)
+                    st.download_button(
+                        "Télécharger les étiquettes PDF",
+                        data=summary.pdf,
+                        file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
+                        mime="application/pdf",
+                        key="download_labels_pdf_after_generation",
+                    )
+                else:
+                    st.error(summary.message)
+                    _show_label_diagnostics(
+                        summary.excluded_lines,
+                        developer_mode,
+                        label_print_category_id,
+                        label_report_name,
+                    )
+            except Exception as exc:
+                st.error(f"Impossible de générer le PDF des étiquettes : {exc}")
 
 # ---------------------------------------------------------------------------
 # Section Odoo — RAPPROCHEMENT MISE À JOUR DES PRIX (hors onglets)

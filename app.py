@@ -25,6 +25,12 @@ from lmc_po_price.odoo_price_update import (
     prepare_odoo_price_update_rows,
     update_odoo_prices,
 )
+from lmc_po_price.odoo_labels import (
+    DEFAULT_LABEL_PRINT_CATEGORY_ID,
+    DEFAULT_LABEL_REPORT_NAME,
+    dry_run_labels_from_invoice_lines,
+    generate_labels_pdf_from_invoice_lines,
+)
 from lmc_po_price.odoo_purchase_order import create_purchase_order_from_review, dry_run_purchase_order_from_review
 from lmc_po_price.purchase_order import prepare_purchase_order_import_csv
 from lmc_po_price.supplier_rules import filter_articles_for_supplier
@@ -52,6 +58,16 @@ def _configured_odoo_database_name() -> str:
     if "odoo" in st.secrets and st.secrets["odoo"].get("database"):
         return str(st.secrets["odoo"]["database"])
     return os.getenv("ODOO_DATABASE", "inconnue")
+
+
+def _label_print_category_id() -> int:
+    labels_config = st.secrets.get("labels", {})
+    return int(labels_config.get("print_category_id", DEFAULT_LABEL_PRINT_CATEGORY_ID))
+
+
+def _label_report_name() -> str:
+    labels_config = st.secrets.get("labels", {})
+    return str(labels_config.get("report_name", DEFAULT_LABEL_REPORT_NAME))
 
 
 def _developer_mode_enabled() -> bool:
@@ -120,6 +136,20 @@ def _show_po_creation_diagnostics(results: pd.DataFrame | None, developer_mode: 
         return
     if st.checkbox("Afficher le diagnostic technique de création Odoo", key="show_po_debug"):
         st.dataframe(results, use_container_width=True, hide_index=True)
+
+
+def _show_label_diagnostics(
+    excluded_lines: pd.DataFrame | None,
+    developer_mode: bool,
+    print_category_id: int,
+    report_name: str,
+) -> None:
+    if not developer_mode:
+        return
+    if st.checkbox("Afficher le diagnostic technique des étiquettes", key="show_label_debug"):
+        st.caption(f"print_category_id={print_category_id}, rapport={report_name}")
+        if excluded_lines is not None and not excluded_lines.empty:
+            st.dataframe(excluded_lines, use_container_width=True, hide_index=True)
 
 
 def _show_preanalysis_status(database_message: str, invoice_file, database_ready: bool) -> None:
@@ -264,6 +294,10 @@ with st.sidebar:
         "Action à préparer",
         [TASK_BOTH, TASK_PURCHASE_ORDER, TASK_PRICE_REVIEW],
     )
+    include_labels_option = st.checkbox(
+        "Préparer l'impression des étiquettes Fruits et Légumes",
+        value=False,
+    )
     abnormal_ratio_percent = st.number_input(
         "Signalement d'un écart de prix supérieur à (%)",
         min_value=0,
@@ -309,6 +343,7 @@ if launch:
         st.session_state["result"] = result
         st.session_state["price_update_rows"] = price_update_rows
         st.session_state["selected_task"] = selected_task
+        st.session_state["include_labels"] = include_labels_option
         st.session_state["database_source"] = _database_source_description(
             database_mode,
             database_file,
@@ -321,6 +356,9 @@ if launch:
         st.session_state.pop("po_created", None)
         st.session_state.pop("po_creation_results", None)
         st.session_state.pop("po_dry_run_summary", None)
+        st.session_state.pop("label_dry_run_summary", None)
+        st.session_state.pop("labels_pdf", None)
+        st.session_state.pop("labels_pdf_message", None)
         st.session_state.pop("price_dry_run_summary", None)
         st.session_state.pop("prices_updated", None)
     except Exception as exc:
@@ -339,9 +377,11 @@ result: WorkflowResult = st.session_state["result"]
 price_update_rows: pd.DataFrame = st.session_state["price_update_rows"]
 invoice = result.invoice
 current_task = st.session_state.get("selected_task", selected_task)
+current_include_labels = bool(st.session_state.get("include_labels", include_labels_option))
 
 include_purchase_order = current_task in {TASK_BOTH, TASK_PURCHASE_ORDER}
 include_price_review = current_task in {TASK_BOTH, TASK_PRICE_REVIEW}
+include_labels = current_include_labels
 database_source = st.session_state.get("database_source", "Base articles non identifiee")
 database_row_count = st.session_state.get("database_row_count")
 database_filtered_row_count = st.session_state.get("database_filtered_row_count")
@@ -564,6 +604,107 @@ if include_purchase_order:
                         st.error(f"Impossible de créer le bon de commande : {exc}")
 
 # ---------------------------------------------------------------------------
+# Section Odoo — IMPRESSION DES ETIQUETTES F&L (hors onglets)
+# ---------------------------------------------------------------------------
+if include_labels:
+    st.divider()
+    st.subheader("Impression des étiquettes Fruits et Légumes")
+    label_print_category_id = _label_print_category_id()
+    label_report_name = _label_report_name()
+    st.caption("Les étiquettes sont préparées depuis les lignes analysées de la facture, sans CSV intermédiaire.")
+
+    label_dry_run_summary = st.session_state.get("label_dry_run_summary")
+    if st.button("Vérifier les étiquettes sans générer le PDF", key="dry_run_labels"):
+        try:
+            with st.spinner("Vérification des étiquettes dans Odoo..."):
+                label_dry_run_summary = dry_run_labels_from_invoice_lines(
+                    result.all_lines,
+                    _odoo_config_from_streamlit(),
+                    print_category_id=label_print_category_id,
+                )
+            st.session_state["label_dry_run_summary"] = label_dry_run_summary
+            st.session_state.pop("labels_pdf", None)
+            st.session_state.pop("labels_pdf_message", None)
+        except Exception as exc:
+            st.error(f"Impossible de vérifier les étiquettes dans Odoo : {exc}")
+
+    if label_dry_run_summary is None:
+        st.info("Lancez une vérification pour contrôler les articles Fruits et Légumes avant génération du PDF.")
+    else:
+        if label_dry_run_summary.errors:
+            st.error(label_dry_run_summary.message)
+        elif label_dry_run_summary.ready:
+            st.success(label_dry_run_summary.message)
+        else:
+            st.warning(label_dry_run_summary.message)
+
+        if label_dry_run_summary.labels.empty:
+            st.info("Aucune ligne éligible pour l'impression des étiquettes.")
+        else:
+            st.dataframe(label_dry_run_summary.labels, use_container_width=True, hide_index=True)
+
+        if not label_dry_run_summary.excluded_lines.empty:
+            if label_dry_run_summary.errors:
+                error_lines = label_dry_run_summary.excluded_lines[
+                    label_dry_run_summary.excluded_lines["status"] == "error"
+                ]
+                st.warning(f"{len(error_lines)} ligne(s) demandent une correction avant impression.")
+                st.dataframe(error_lines, use_container_width=True, hide_index=True)
+            _show_label_diagnostics(
+                label_dry_run_summary.excluded_lines,
+                developer_mode,
+                label_print_category_id,
+                label_report_name,
+            )
+
+        labels_ready = label_dry_run_summary.ready > 0 and label_dry_run_summary.errors == 0
+        if st.session_state.get("labels_pdf") and st.session_state.get("labels_pdf_message"):
+            st.success(st.session_state["labels_pdf_message"])
+            st.download_button(
+                "Télécharger les étiquettes PDF",
+                data=st.session_state["labels_pdf"],
+                file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
+                mime="application/pdf",
+                key="download_labels_pdf",
+            )
+        else:
+            confirm_labels = st.checkbox(
+                "J'ai vérifié les étiquettes et je veux générer le PDF",
+                key="confirm_labels",
+                disabled=not labels_ready,
+            )
+            if st.button("Générer le PDF des étiquettes", disabled=not confirm_labels, key="generate_labels_pdf"):
+                try:
+                    with st.spinner("Génération du PDF des étiquettes depuis Odoo..."):
+                        summary = generate_labels_pdf_from_invoice_lines(
+                            result.all_lines,
+                            _odoo_config_from_streamlit(),
+                            print_category_id=label_print_category_id,
+                            report_name=label_report_name,
+                        )
+                    if summary.status == "success" and summary.pdf:
+                        st.session_state["labels_pdf"] = summary.pdf
+                        st.session_state["labels_pdf_message"] = summary.message
+                        st.success(summary.message)
+                        st.download_button(
+                            "Télécharger les étiquettes PDF",
+                            data=summary.pdf,
+                            file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
+                            mime="application/pdf",
+                            key="download_labels_pdf_after_generation",
+                        )
+                    else:
+                        st.error(summary.message)
+                        _show_label_diagnostics(
+                            summary.excluded_lines,
+                            developer_mode,
+                            label_print_category_id,
+                            label_report_name,
+                        )
+                except Exception as exc:
+                    st.error(f"Impossible de générer le PDF des étiquettes : {exc}")
+
+# ---------------------------------------------------------------------------
 # Section Odoo — RAPPROCHEMENT MISE À JOUR DES PRIX (hors onglets)
 # ---------------------------------------------------------------------------
 if include_price_review:
@@ -627,7 +768,7 @@ if include_price_review:
                     st.error(f"Impossible de mettre à jour les prix : {exc}")
 
 st.caption(
-    "Les écritures Odoo ne sont jamais automatiques : elles ne sont lancées "
+    "Les actions Odoo ne sont jamais automatiques : elles ne sont lancées "
     "qu'après vérification et validation explicite par case à cocher."
 )
 
@@ -638,6 +779,9 @@ price_dry_run_results = price_dry_run_summary.results if price_dry_run_summary i
 po_dry_run_summary = st.session_state.get("po_dry_run_summary")
 po_dry_run_results = po_dry_run_summary.results if po_dry_run_summary is not None else None
 po_creation_results = st.session_state.get("po_creation_results")
+label_dry_run_summary = st.session_state.get("label_dry_run_summary")
+label_dry_run_results = label_dry_run_summary.labels if label_dry_run_summary is not None else None
+label_excluded_results = label_dry_run_summary.excluded_lines if label_dry_run_summary is not None else None
 st.download_button(
     "Telecharger le classeur de controle",
     data=result_workbook_bytes(
@@ -648,6 +792,8 @@ st.download_button(
         price_dry_run_results=price_dry_run_results,
         po_dry_run_results=po_dry_run_results,
         po_creation_results=po_creation_results,
+        label_dry_run_results=label_dry_run_results,
+        label_excluded_results=label_excluded_results,
     ),
     file_name=f"{invoice.invoice_number or 'facture'}_controle_odoo.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

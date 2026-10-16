@@ -87,6 +87,7 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
         return {
             "reference_fournisseur": reference,
             "designation": _cleanup_designation(structured.group("designation")),
+            "nb_colis": _parse_colis(structured.group("colis")),
             "quantite": parse_decimal(structured.group("quantite")),
             "unite": unit,
             "prix_unitaire": parse_decimal(structured.group("net")),
@@ -113,6 +114,7 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
         return {
             "reference_fournisseur": reference,
             "designation": _cleanup_designation(not_delivered.group("designation")),
+            "nb_colis": 0,
             "quantite": 0,
             "unite": unit,
             "prix_unitaire": parse_decimal(not_delivered.group("net")),
@@ -124,6 +126,15 @@ def _parse_line_body(reference: str, body: str) -> dict[str, object] | None:
         }
 
     return None
+
+
+def _parse_colis(value: str | None) -> float | None:
+    if not value:
+        return None
+    text = value.strip()
+    if not re.match(r"^\d+(?:[,.]\d+)?$", text):
+        return None
+    return parse_decimal(text)
 
 
 def _normalize_unit(value: str | None) -> str:

@@ -23,6 +23,8 @@ def result_workbook_bytes(
     price_dry_run_results: pd.DataFrame | None = None,
     po_dry_run_results: pd.DataFrame | None = None,
     po_creation_results: pd.DataFrame | None = None,
+    label_dry_run_results: pd.DataFrame | None = None,
+    label_excluded_results: pd.DataFrame | None = None,
 ) -> bytes:
     """Construit le classeur de contrôle selon les tâches sélectionnées."""
     sheets = {
@@ -48,6 +50,10 @@ def result_workbook_bytes(
             numeric_po = _purchase_order_with_numeric_product_ids(result)
             if not numeric_po.empty:
                 sheets["bon_commande_id_numerique"] = numeric_po
+    if label_dry_run_results is not None and not label_dry_run_results.empty:
+        sheets["etiquettes_fl_a_imprimer"] = label_dry_run_results
+    if label_excluded_results is not None and not label_excluded_results.empty:
+        sheets["etiquettes_fl_exclues"] = label_excluded_results
     sheets["notes"] = _notes()
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -72,6 +78,9 @@ def _notes() -> pd.DataFrame:
             {"champ": "dry_run_po_odoo", "description": "Rapport de verification Odoo sans creation avant creation du bon de commande."},
             {"champ": "creation_po_odoo", "description": "Rapport de creation reelle du bon de commande dans Odoo."},
             {"champ": "bon_commande_id_numerique", "description": "Onglet diagnostic: meme bon de commande avec Article/ID remplace par l'ID numerique product.product."},
+            {"champ": "Fact_nb_colis", "description": "Nombre de colis lu sur la facture fournisseur; sert au nombre d'etiquettes F&L."},
+            {"champ": "etiquettes_fl_a_imprimer", "description": "Articles F&L verifies dans Odoo et nombre d'etiquettes a generer; aucune ecriture Odoo."},
+            {"champ": "etiquettes_fl_exclues", "description": "Lignes exclues de l'impression des etiquettes F&L ou a corriger; aucune ecriture Odoo."},
         ]
     )
 

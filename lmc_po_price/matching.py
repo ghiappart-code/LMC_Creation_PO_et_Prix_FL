@@ -186,6 +186,7 @@ def _invoice_columns(line: pd.Series) -> dict[str, object]:
     return {
         "Fact_reference": line.get("reference_fournisseur"),
         "Fact_designation": line.get("designation"),
+        "Fact_nb_colis": line.get("nb_colis"),
         "Fact_quantite": line.get("quantite"),
         "Fact_unite": line.get("unite"),
         "Fact_PU_Net": line.get("prix_unitaire"),

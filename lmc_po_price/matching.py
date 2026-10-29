@@ -66,6 +66,17 @@ def _match_line(line: pd.Series, articles: pd.DataFrame, config: WorkflowConfig)
 def _matched_row(line: pd.Series, product: pd.Series, method: str, config: WorkflowConfig) -> dict[str, object]:
     adjusted_invoice_price = float(line.get("prix_unitaire_ajuste") or line.get("prix_unitaire") or 0)
     unit_ratio = _numeric_or_default(product.get("ratio_unite_fournisseur"), 1.0)
+    unit_ratio_override = _numeric_or_default(
+        line.get("supplier_unit_ratio_override_when_abnormal"), 0.0
+    )
+    if unit_ratio_override and _should_use_unit_ratio_override(
+        adjusted_invoice_price,
+        unit_ratio,
+        unit_ratio_override,
+        float(product.get("prix_fournisseur") or product.get("cout") or 0),
+        config.abnormal_ratio,
+    ):
+        unit_ratio = unit_ratio_override
     invoice_price = adjusted_invoice_price * unit_ratio
     current_price = float(product.get("prix_fournisseur") or product.get("cout") or 0)
     difference = invoice_price - current_price
@@ -98,6 +109,22 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
         }
     )
     return base
+
+
+def _should_use_unit_ratio_override(
+    invoice_price: float,
+    current_ratio: float,
+    override_ratio: float,
+    current_price: float,
+    abnormal_ratio: float,
+) -> bool:
+    if current_price == 0:
+        return False
+    current_difference = invoice_price * current_ratio - current_price
+    override_difference = invoice_price * override_ratio - current_price
+    current_is_abnormal = abs(current_difference / current_price) > abnormal_ratio
+    override_is_abnormal = abs(override_difference / current_price) > abnormal_ratio
+    return current_is_abnormal and not override_is_abnormal
 
 
 def _matched_review_reason(

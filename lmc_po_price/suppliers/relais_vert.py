@@ -14,6 +14,7 @@ from lmc_po_price.text import normalize_key, parse_decimal
 class RelaisVertParser(SupplierInvoiceParser):
     supplier_code = "254"
     display_name = "Relais Vert"
+    PRODUCT_AREA_Y_MIN = 280
 
     def matches(self, text: str) -> bool:
         text_key = text.casefold()
@@ -54,8 +55,10 @@ class RelaisVertParser(SupplierInvoiceParser):
         words = [
             (x0, y0, x1, y1, text)
             for x0, y0, x1, y1, text, *_ in page.get_text("words")
-            if 280 <= y0 <= 780
+            if y0 <= 780
         ]
+        product_area_y_min = self._product_area_start_y(words)
+        words = [word for word in words if word[1] >= product_area_y_min]
         words.sort(key=lambda item: (item[1], item[0]))
 
         starts: list[tuple[float, str]] = []
@@ -78,6 +81,25 @@ class RelaisVertParser(SupplierInvoiceParser):
                 product_rows.append(row)
         return product_rows
 
+    def _product_area_start_y(self, words: list[tuple]) -> float:
+        """Repère l'en-tête du tableau pour s'adapter à sa position sur la page."""
+        header_words: list[tuple[str, float, float]] = []
+        for word in words:
+            x0, y0, _x1, y1, text = word
+            label = str(text).strip().lower().rstrip(".:/")
+            if 38 <= x0 <= 80 and label.startswith("réf"):
+                header_words.append(("reference", y0, y1))
+            elif 38 <= x0 <= 80 and label == "ean":
+                header_words.append(("ean", y0, y1))
+            elif 85 <= x0 <= 255 and label.startswith("désignation"):
+                header_words.append(("designation", y0, y1))
+
+        for reference in header_words:
+            nearby = [header for header in header_words if abs(header[1] - reference[1]) <= 12]
+            if {header[0] for header in nearby} >= {"reference", "ean", "designation"}:
+                return max(header[2] for header in nearby) + 1
+        return self.PRODUCT_AREA_Y_MIN
+
     def _row_from_items(
         self,
         reference: str,
@@ -98,6 +120,7 @@ class RelaisVertParser(SupplierInvoiceParser):
         quantity = self._number_in_band(items, 360, 382)
         amount = self._number_in_band(items, 515, 542)
         adjusted_price = unit_price * (1 + fuel_pct / 100) if unit_price is not None else None
+        ratio_override = self._unit_ratio_override_when_abnormal(quantity, unit_price, amount)
 
         return {
             "reference_fournisseur": reference,
@@ -118,8 +141,21 @@ class RelaisVertParser(SupplierInvoiceParser):
             "remise_temp": int(bool(q_discount or p_discount or e_discount)),
             "remise_detail": _remise_detail(q_discount, p_discount, e_discount),
             "taux_gazole_pct": fuel_pct,
+            "supplier_unit_ratio_override_when_abnormal": ratio_override,
             "page": page_index,
         }
+
+    def _unit_ratio_override_when_abnormal(
+        self,
+        quantity: float | None,
+        unit_price: float | None,
+        amount: float | None,
+    ) -> float | None:
+        if quantity is None or unit_price is None or amount is None:
+            return None
+        if abs(quantity * unit_price - amount) < 0.03:
+            return 1.0
+        return None
 
     def _reference_from_words(self, words: list[tuple]) -> str | None:
         for word in words:
@@ -128,7 +164,7 @@ class RelaisVertParser(SupplierInvoiceParser):
                 continue
             if cleaned.isdigit() and len(cleaned) == 13:
                 continue
-            if re.fullmatch(r"[A-Z0-9]{4,6}", cleaned):
+            if re.fullmatch(r"[A-Z0-9]{3,6}", cleaned):
                 return cleaned
         return None
 

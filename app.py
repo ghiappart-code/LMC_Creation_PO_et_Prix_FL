@@ -296,7 +296,8 @@ with st.sidebar:
     )
     include_labels_option = st.checkbox(
         "Préparer l'impression des étiquettes Fruits et Légumes",
-        value=False,
+        value=True,
+        key="prepare_labels_option",
     )
     abnormal_ratio_percent = st.number_input(
         "Signalement d'un écart de prix supérieur à (%)",
@@ -480,6 +481,80 @@ with tabs[tab_index]:
     st.dataframe(_dataframe_for_display(ambiguous_review(result.ambiguous)), use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
+# Section Odoo — RAPPROCHEMENT MISE À JOUR DES PRIX (hors onglets)
+# ---------------------------------------------------------------------------
+if include_price_review:
+    st.divider()
+    st.subheader("Rapprochement Mise à Jour des Prix dans Odoo")
+    if price_update_rows.empty:
+        st.info("Aucune ligne de changement de prix n'est éligible à une mise à jour automatique.")
+    else:
+        st.warning(f"{len(price_update_rows)} ligne(s) éligible(s) à la mise à jour Odoo.")
+        dry_run_summary = price_dry_run_summary
+        if st.button("Vérifier la MàJ sans écrire dans Odoo", key="dry_run_prices"):
+            try:
+                with st.spinner("Vérification de la MàJ sans écrire dans Odoo..."):
+                    dry_run_summary = dry_run_odoo_price_updates(
+                        price_update_rows,
+                        _odoo_config_from_streamlit(),
+                    )
+                st.session_state["price_dry_run_summary"] = dry_run_summary
+            except Exception as exc:
+                st.error(f"Impossible de vérifier les prix dans Odoo : {exc}")
+
+        if dry_run_summary is not None:
+            if dry_run_summary.errors:
+                st.error(
+                    f"Vérification Odoo avec erreurs : {dry_run_summary.success} prêt(s), "
+                    f"{dry_run_summary.warnings} avertissement(s), {dry_run_summary.errors} erreur(s)."
+                )
+            else:
+                st.success(
+                    f"Vérification Odoo terminée : {dry_run_summary.success} prêt(s), "
+                    f"{dry_run_summary.warnings} avertissement(s), 0 erreur."
+                )
+            st.dataframe(dry_run_summary.results, use_container_width=True, hide_index=True)
+
+        if st.session_state.get("prices_updated"):
+            st.success(st.session_state["prices_updated"])
+        else:
+            if dry_run_summary is None or dry_run_summary.errors:
+                st.info("Vous pouvez lancer une vérification de la MàJ sans écrire dans Odoo.")
+            confirm_col, action_col = st.columns([3, 1.6])
+            with confirm_col:
+                confirm_prices = st.checkbox(
+                    "**J'ai vérifié les changements de prix et je veux mettre à jour Odoo**",
+                    key="confirm_prices",
+                )
+            with action_col:
+                update_prices_clicked = st.button(
+                    "Mettre à jour les prix",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not confirm_prices,
+                    key="update_prices",
+                )
+            if update_prices_clicked:
+                try:
+                    with st.spinner("Mise à jour des prix dans Odoo..."):
+                        summary = update_odoo_prices(price_update_rows, _odoo_config_from_streamlit())
+                    if summary.errors:
+                        msg = (
+                            f"Mise à jour terminée avec erreurs : {summary.success} succès, "
+                            f"{summary.warnings} avertissement(s), {summary.errors} erreur(s)."
+                        )
+                        st.error(msg)
+                    else:
+                        msg = (
+                            f"Mise à jour terminée : {summary.success} succès, "
+                            f"{summary.warnings} avertissement(s), 0 erreur."
+                        )
+                        st.session_state["prices_updated"] = msg
+                        st.success(msg)
+                    st.dataframe(summary.results, use_container_width=True, hide_index=True)
+                except Exception as exc:
+                    st.error(f"Impossible de mettre à jour les prix : {exc}")
+
 # Section Odoo — CRÉATION BON DE COMMANDE (hors onglets)
 # ---------------------------------------------------------------------------
 if include_purchase_order:
@@ -499,13 +574,16 @@ if include_purchase_order:
             result.purchase_order_review["Lignes de la commande/Quantité"].fillna(0)
             * result.purchase_order_review["Lignes de la commande/Prix unitaire"].fillna(0)
         ).sum()
-        # Les montant_ht des lignes sont déjà sans transport (transport est dans charges)
+        # Les montants HT des lignes produit n'incluent pas la ligne de transport.
         total_facture_sans_transport = result.invoice.lines["montant_ht"].fillna(0).sum()
         transport_ht = result.invoice.charges["montant_ht"].fillna(0).sum() if not result.invoice.charges.empty else 0.0
-        ecart = total_po - total_facture_sans_transport
+        total_facture_avec_transport = total_facture_sans_transport + transport_ht
+        ecart = total_po - total_facture_avec_transport
+        if abs(ecart) <= 0.01:
+            ecart = 0.0
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total HT bon de commande", f"{total_po:.2f} €")
-        col2.metric("Total HT facture sans transport", f"{total_facture_sans_transport:.2f} €")
+        col2.metric("Total HT facture avec transport", f"{total_facture_avec_transport:.2f} €")
         col3.metric("Total HT transport", f"{transport_ht:.2f} €")
         col4.metric("Écart", f"{ecart:.2f} €", delta_color="inverse" if abs(ecart) > 0.01 else "off")
         if abs(ecart) > 0.01:
@@ -579,11 +657,21 @@ if include_purchase_order:
             elif not po_dry_run_ok:
                 st.info("Vous pouvez lancer une vérification du bon de commande sans écriture dans Odoo.")
             if not po_already_created:
-                confirm_po = st.checkbox(
-                    "J'ai vérifié le bon de commande et je veux le créer dans Odoo",
-                    key="confirm_po",
-                )
-                if st.button("Créer le bon de commande dans Odoo", disabled=not confirm_po, key="create_po"):
+                confirm_col, action_col = st.columns([3, 1.6])
+                with confirm_col:
+                    confirm_po = st.checkbox(
+                        "**J'ai vérifié le bon de commande et je veux le créer dans Odoo**",
+                        key="confirm_po",
+                    )
+                with action_col:
+                    create_po_clicked = st.button(
+                        "Créer le bon de commande",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=not confirm_po,
+                        key="create_po",
+                    )
+                if create_po_clicked:
                     try:
                         with st.spinner("Création du bon de commande dans Odoo..."):
                             started_at = perf_counter()
@@ -660,19 +748,33 @@ if include_labels:
     # Génération du PDF : indépendante de la vérification (comme pour le bon de commande)
     if st.session_state.get("labels_pdf") and st.session_state.get("labels_pdf_message"):
         st.success(st.session_state["labels_pdf_message"])
-        st.download_button(
-            "Télécharger les étiquettes PDF",
-            data=st.session_state["labels_pdf"],
-            file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
-            mime="application/pdf",
-            key="download_labels_pdf",
-        )
+        _, download_col = st.columns([3, 1.6])
+        with download_col:
+            st.download_button(
+                "Télécharger les étiquettes PDF",
+                data=st.session_state["labels_pdf"],
+                file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+                key="download_labels_pdf",
+            )
     else:
-        confirm_labels = st.checkbox(
-            "J'ai vérifié les étiquettes et je veux générer le PDF",
-            key="confirm_labels",
-        )
-        if st.button("Générer le PDF des étiquettes", disabled=not confirm_labels, key="generate_labels_pdf"):
+        confirm_col, action_col = st.columns([3, 1.6])
+        with confirm_col:
+            confirm_labels = st.checkbox(
+                "**J'ai vérifié les étiquettes et je veux générer le PDF**",
+                key="confirm_labels",
+            )
+        with action_col:
+            generate_labels_clicked = st.button(
+                "Générer les étiquettes PDF",
+                type="primary",
+                use_container_width=True,
+                disabled=not confirm_labels,
+                key="generate_labels_pdf",
+            )
+        if generate_labels_clicked:
             try:
                 with st.spinner("Génération du PDF des étiquettes depuis Odoo..."):
                     summary = generate_labels_pdf_from_invoice_lines(
@@ -685,13 +787,17 @@ if include_labels:
                     st.session_state["labels_pdf"] = summary.pdf
                     st.session_state["labels_pdf_message"] = summary.message
                     st.success(summary.message)
-                    st.download_button(
-                        "Télécharger les étiquettes PDF",
-                        data=summary.pdf,
-                        file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
-                        mime="application/pdf",
-                        key="download_labels_pdf_after_generation",
-                    )
+                    _, download_col = st.columns([3, 1.6])
+                    with download_col:
+                        st.download_button(
+                            "Télécharger les étiquettes PDF",
+                            data=summary.pdf,
+                            file_name=f"{invoice.invoice_number or 'facture'}_etiquettes_fl.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True,
+                            key="download_labels_pdf_after_generation",
+                        )
                 else:
                     st.error(summary.message)
                     _show_label_diagnostics(
@@ -704,68 +810,6 @@ if include_labels:
                 st.error(f"Impossible de générer le PDF des étiquettes : {exc}")
 
 # ---------------------------------------------------------------------------
-# Section Odoo — RAPPROCHEMENT MISE À JOUR DES PRIX (hors onglets)
-# ---------------------------------------------------------------------------
-if include_price_review:
-    st.divider()
-    st.subheader("Rapprochement Mise à Jour des Prix dans Odoo")
-    if price_update_rows.empty:
-        st.info("Aucune ligne de changement de prix n'est éligible à une mise à jour automatique.")
-    else:
-        st.warning(f"{len(price_update_rows)} ligne(s) éligible(s) à la mise à jour Odoo.")
-        dry_run_summary = price_dry_run_summary
-        if st.button("Vérifier la MàJ sans écrire dans Odoo", key="dry_run_prices"):
-            try:
-                with st.spinner("Vérification de la MàJ sans écrire dans Odoo..."):
-                    dry_run_summary = dry_run_odoo_price_updates(price_update_rows, _odoo_config_from_streamlit())
-                st.session_state["price_dry_run_summary"] = dry_run_summary
-            except Exception as exc:
-                st.error(f"Impossible de vérifier les prix dans Odoo : {exc}")
-
-        if dry_run_summary is not None:
-            if dry_run_summary.errors:
-                st.error(
-                    f"Vérification Odoo avec erreurs : {dry_run_summary.success} prêt(s), "
-                    f"{dry_run_summary.warnings} avertissement(s), {dry_run_summary.errors} erreur(s)."
-                )
-            else:
-                st.success(
-                    f"Vérification Odoo terminée : {dry_run_summary.success} prêt(s), "
-                    f"{dry_run_summary.warnings} avertissement(s), 0 erreur."
-                )
-            st.dataframe(dry_run_summary.results, use_container_width=True, hide_index=True)
-
-        if st.session_state.get("prices_updated"):
-            st.success(st.session_state["prices_updated"])
-        else:
-            dry_run_ok = dry_run_summary is not None and dry_run_summary.errors == 0
-            if not dry_run_ok:
-                st.info("Vous pouvez lancer une vérification de la MàJ sans écrire dans Odoo.")
-            confirm_prices = st.checkbox(
-                "J'ai vérifié les changements de prix et je veux mettre à jour Odoo",
-                key="confirm_prices",
-            )
-            if st.button("Mettre à jour les prix dans Odoo", disabled=not confirm_prices, key="update_prices"):
-                try:
-                    with st.spinner("Mise à jour des prix dans Odoo..."):
-                        summary = update_odoo_prices(price_update_rows, _odoo_config_from_streamlit())
-                    if summary.errors:
-                        msg = (
-                            f"Mise à jour terminée avec erreurs : {summary.success} succès, "
-                            f"{summary.warnings} avertissement(s), {summary.errors} erreur(s)."
-                        )
-                        st.error(msg)
-                    else:
-                        msg = (
-                            f"Mise à jour terminée : {summary.success} succès, "
-                            f"{summary.warnings} avertissement(s), 0 erreur."
-                        )
-                        st.session_state["prices_updated"] = msg
-                        st.success(msg)
-                    st.dataframe(summary.results, use_container_width=True, hide_index=True)
-                except Exception as exc:
-                    st.error(f"Impossible de mettre à jour les prix : {exc}")
-
 st.caption(
     "Les actions Odoo ne sont jamais automatiques : elles ne sont lancées "
     "qu'après vérification et validation explicite par case à cocher."

@@ -29,9 +29,13 @@ class RelaisVertParser(SupplierInvoiceParser):
         records: list[dict[str, object]] = []
         charge_records: list[dict[str, object]] = []
         fuel_pct = _find_fuel_surcharge_pct(text)
-        invoice_date = _parse_french_date(_find_invoice_date(text))
+        invoice_date = None
+        delivery_date = None
 
         with fitz.open(stream=_pdf_bytes(file_or_path), filetype="pdf") as doc:
+            if len(doc):
+                invoice_date = _header_date(doc[0], "FACTURE", same_line=True)
+                delivery_date = _header_date(doc[0], "Livraison", same_line=False)
             for page_index, page in enumerate(doc, start=1):
                 page_records, page_charges = self._parse_page(page, page_index, fuel_pct)
                 records.extend(page_records)
@@ -42,8 +46,8 @@ class RelaisVertParser(SupplierInvoiceParser):
             supplier_code=self.supplier_code,
             supplier_name=self.display_name,
             invoice_number=_find_invoice_number(text),
-            invoice_date=invoice_date,
-            delivery_date=None,
+            invoice_date=invoice_date or _parse_french_date(_find_invoice_date(text)),
+            delivery_date=delivery_date,
             lines=lines,
             charges=pd.DataFrame(charge_records),
             metadata={
@@ -131,6 +135,8 @@ class RelaisVertParser(SupplierInvoiceParser):
         p_discount = self._number_in_band(items, 450, 463) or 0.0
         e_discount = self._number_in_band(items, 463, 477) or 0.0
         quantity = self._number_in_band(items, 360, 382)
+        package_count = self._number_in_band(items, 330, 355)
+        unit = self._text_in_band(items, 255, 280)
         amount = self._number_in_band(items, 515, 542)
         adjusted_price = unit_price * (1 + fuel_pct / 100) if unit_price is not None else None
         ratio_override = self._unit_ratio_override_when_abnormal(quantity, unit_price, amount)
@@ -138,8 +144,9 @@ class RelaisVertParser(SupplierInvoiceParser):
         return {
             "reference_fournisseur": reference,
             "designation": _cleanup_designation(designation),
+            "nb_colis": package_count,
             "quantite": quantity,
-            "unite": "",
+            "unite": unit,
             "prix_unitaire": unit_price,
             "prix_unitaire_brut": gross_price,
             "prix_unitaire_ajuste": adjusted_price,
@@ -210,6 +217,14 @@ class RelaisVertParser(SupplierInvoiceParser):
         ]
         return values[0] if values else None
 
+    def _text_in_band(self, items: list[tuple], x_min: float, x_max: float) -> str:
+        values = [
+            str(item[4]).strip()
+            for item in items
+            if x_min <= item[0] <= x_max and str(item[4]).strip()
+        ]
+        return values[0].upper() if values else ""
+
     def _table_end_y(self, words: list[tuple], last_row_y: float) -> float:
         footer_markers = {"total", "echeance", "échéance"}
         candidates = [
@@ -230,6 +245,37 @@ def _find_invoice_number(text: str) -> str | None:
 def _find_invoice_date(text: str) -> str | None:
     match = re.search(r"\b\d{2}/\d{2}/\d{4}\b", text)
     return match.group(0) if match else None
+
+
+def _header_date(page: object, label: str, *, same_line: bool) -> date | None:
+    """Read header dates by their position relative to the printed label."""
+    words = page.get_text("words")
+    labels = [
+        word for word in words
+        if str(word[4]).strip().casefold() == label.casefold()
+        and (label.casefold() != "livraison" or word[0] >= 250)
+    ]
+    date_words = [
+        word for word in words
+        if re.fullmatch(r"\d{2}/\d{2}/\d{4}", str(word[4]).strip())
+    ]
+    matches: list[tuple[float, str]] = []
+    for label_word in labels:
+        for date_word in date_words:
+            dx = abs(date_word[0] - label_word[0])
+            dy = date_word[1] - label_word[1]
+            if same_line:
+                if abs(dy) > 5 or date_word[0] <= label_word[0]:
+                    continue
+                score = abs(dy) + dx / 100
+            else:
+                if dy < 0 or dy > 28 or dx > 80:
+                    continue
+                score = dy + dx / 100
+            matches.append((score, str(date_word[4]).strip()))
+    if not matches:
+        return None
+    return _parse_french_date(min(matches, key=lambda item: item[0])[1])
 
 
 def _find_fuel_surcharge_pct(text: str) -> float:

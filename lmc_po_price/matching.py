@@ -66,6 +66,7 @@ def _match_line(line: pd.Series, articles: pd.DataFrame, config: WorkflowConfig)
 def _matched_row(line: pd.Series, product: pd.Series, method: str, config: WorkflowConfig) -> dict[str, object]:
     adjusted_invoice_price = float(line.get("prix_unitaire_ajuste") or line.get("prix_unitaire") or 0)
     unit_ratio = _numeric_or_default(product.get("ratio_unite_fournisseur"), 1.0)
+    current_cost = _numeric_or_default(product.get("cout"), 0.0)
     unit_ratio_override = _numeric_or_default(
         line.get("supplier_unit_ratio_override_when_abnormal"), 0.0
     )
@@ -73,18 +74,30 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
         adjusted_invoice_price,
         unit_ratio,
         unit_ratio_override,
-        float(product.get("prix_fournisseur") or product.get("cout") or 0),
+        current_cost,
         config.abnormal_ratio,
     ):
         unit_ratio = unit_ratio_override
-    invoice_price = adjusted_invoice_price * unit_ratio
-    current_price = float(product.get("prix_fournisseur") or product.get("cout") or 0)
-    difference = invoice_price - current_price
-    pct = difference / current_price if current_price else None
-    changed = round(invoice_price, 2) != round(current_price, 2)
-    abnormal = bool(pct is not None and abs(pct) > config.abnormal_ratio and changed)
+    invoice_cost = adjusted_invoice_price * unit_ratio
+    current_supplier_price = _numeric_or_default(product.get("prix_fournisseur"), 0.0)
+    current_price = current_supplier_price or current_cost
+    # The supplier price is expressed in the supplier's unit (for example, a
+    # carton), while standard_price and the margin calculation use the Odoo
+    # product unit. Compare each value only with a value in the same unit.
+    cost_difference = invoice_cost - current_cost
+    cost_pct = cost_difference / current_cost if current_cost else None
+    supplier_price_changed = (
+        round(adjusted_invoice_price, 2) != round(current_supplier_price, 2)
+        if current_supplier_price
+        else round(invoice_cost, 2) != round(current_cost, 2)
+    )
+    cost_changed = round(invoice_cost, 2) != round(current_cost, 2)
+    changed = supplier_price_changed or cost_changed
+    difference = adjusted_invoice_price - current_supplier_price if current_supplier_price else cost_difference
+    pct = difference / current_supplier_price if current_supplier_price else cost_pct
+    abnormal = bool(cost_pct is not None and abs(cost_pct) > config.abnormal_ratio and changed)
     new_sale_price = sale_price(
-        invoice_price,
+        invoice_cost,
         product.get("tva"),
         product.get("categorie_marge"),
         product.get("categorie_marge_markup"),
@@ -94,7 +107,7 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
     base.update(_product_columns(product))
     base.update(
         {
-            "Fact_PU_unitaire": invoice_price,
+            "Fact_PU_unitaire": invoice_cost,
             "statut": "trouve",
             "Match_Methode": method,
             "DB_Prix_Net": current_price,
@@ -103,7 +116,7 @@ def _matched_row(line: pd.Series, product: pd.Series, method: str, config: Workf
             "New_Prix_de_vente": new_sale_price,
             "prix_change": bool(changed),
             "ecart_anormal": abnormal,
-            "raison_revue": _matched_review_reason(abnormal, missing_margin, current_price, invoice_price),
+            "raison_revue": _matched_review_reason(abnormal, missing_margin, current_cost, invoice_cost),
             "peut_etre_mis_a_jour": bool(changed and not missing_margin),
             "Odoo_sale_ok": bool(changed and not missing_margin),
         }

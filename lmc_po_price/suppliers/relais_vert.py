@@ -79,7 +79,7 @@ class RelaisVertParser(SupplierInvoiceParser):
             if not 38 <= x0 <= 80:
                 continue
             reference = self._reference_from_words([word])
-            if reference is not None:
+            if reference is not None and self._has_product_columns(word, words):
                 starts.append((y0, reference))
 
         starts.sort(key=lambda item: item[0])
@@ -97,6 +97,14 @@ class RelaisVertParser(SupplierInvoiceParser):
             if row:
                 product_rows.append(row)
         return product_rows, charge_rows
+
+    def _has_product_columns(self, reference_word: tuple, words: list[tuple]) -> bool:
+        """Ignore isolated document identifiers that have no accompanying row data."""
+        row_y = reference_word[1]
+        same_row = [word for word in words if abs(word[1] - row_y) <= 3]
+        has_designation = any(85 <= word[0] <= 255 for word in same_row)
+        has_other_column = any(255 < word[0] <= 542 for word in same_row)
+        return has_designation and has_other_column
 
     def _product_area_start_y(self, words: list[tuple]) -> float:
         """Repère l'en-tête du tableau pour s'adapter à sa position sur la page."""
@@ -201,8 +209,6 @@ class RelaisVertParser(SupplierInvoiceParser):
     def _reference_from_words(self, words: list[tuple]) -> str | None:
         for word in words:
             cleaned = str(word[4]).strip()
-            if cleaned.startswith("BL"):
-                continue
             if cleaned.isdigit() and len(cleaned) == 13:
                 continue
             if re.fullmatch(r"[A-Z0-9]{3,6}", cleaned):
